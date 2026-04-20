@@ -138,7 +138,52 @@ the network.
 }
 ```
 
-### 3 — Syslog only, legacy UDP collector
+### 3 — Secrets from OpenBao (standalone `securix.openbao` module)
+
+Rather than dropping secret files on disk, have the dedicated
+[OpenBao prefetch module](./openbao.md) fetch them at startup.
+`securix.openbao` is orthogonal to the log-shipper — any consumer
+can read from `/run/openbao/secrets/`.
+
+```nix
+{
+  securix.openbao = {
+    enable = true;
+    address = "https://bao.corp.local:8200";
+    tlsCaFile = "/etc/ssl/certs/corp-ca.pem";
+    roleIdFile   = "/run/keys/bao-role-id";
+    secretIdFile = "/run/keys/bao-secret-id";
+    secrets = {
+      os_password     = { path = "securix/opensearch"; field = "password"; };
+      syslog_key_pass = { path = "securix/syslog";     field = "key_passphrase"; };
+    };
+  };
+
+  securix.logShipper = {
+    sinks.opensearch = {
+      enable = true;
+      endpoint = "https://opensearch.corp.local:9200";
+      auth.user = "securix";
+      auth.passwordFile = "/run/openbao/secrets/os_password";
+    };
+    sinks.syslog = {
+      enable = true;
+      endpoint = "siem.corp.local:6514";
+      mode = "tcp+tls";
+      tls.keyFile     = "/etc/ssl/private/securix-client.key";
+      tls.keyPassFile = "/run/openbao/secrets/syslog_key_pass";
+    };
+  };
+}
+```
+
+The log-shipper auto-detects sink paths under the OpenBao output
+directory (`/run/openbao/secrets/` by default) and wires
+`After=securix-openbao.service` + `Wants=securix-openbao.service`
+onto its own unit, so the fetched files are guaranteed to exist
+before `LoadCredential` reads them.
+
+### 4 — Syslog only, legacy UDP collector
 
 ```nix
 {
