@@ -31,6 +31,9 @@
     # Centralised log shipping via Vector (opt-in, journald ±
     # /var/log/audit → OpenSearch and/or syslog)
     ./log-shipper.nix
+    # OpenBao / Vault secret prefetch (standalone — consumers use
+    # /run/openbao/secrets/* and depend on securix-openbao.service)
+    ./openbao.nix
     # Data-only pertaining to the system
     ./self.nix
     # All the VPN code

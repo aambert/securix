@@ -16,6 +16,7 @@ SPDX-License-Identifier: CC-BY-SA-4.0
   - [Deployment options](./user/deployment.md)
   - [A cache for your deployment](./user/cache.md)
   - [Centralised log shipping](./user/log-shipping.md)
+  - [OpenBao secret prefetch](./user/openbao.md)
 
 # Developer guide
 
