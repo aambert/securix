@@ -82,7 +82,7 @@ adds the ordering implicitly, so the minimum consumer config is:
 
 ```nix
 {
-  securix.o11y.logShipper.sinks.opensearch = {
+  securix.logShipper.sinks.opensearch = {
     enable = true;
     endpoint = "https://opensearch.corp.local:9200";
     auth.user = "securix";

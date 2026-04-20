@@ -345,6 +345,17 @@ in
       hasSlMtls = sl.tls.keyFile != null;
       hasSlKeyPass = sl.tls.keyPassFile != null;
 
+      # Auto-detection of the standalone `securix.openbao` module's
+      # output directory. Any sink file whose path lives inside this
+      # directory is consumed from that module's prefetched output,
+      # so the shipper unit must order itself after the prefetch.
+      openbaoOutputDir = toString (config.securix.openbao.outputDir or "/run/openbao/secrets");
+      pathInOpenbao = p: p != null && lib.hasPrefix (openbaoOutputDir + "/") (toString p);
+      anyOpenbaoSecret =
+        pathInOpenbao os.auth.passwordFile
+        || pathInOpenbao sl.tls.keyFile
+        || pathInOpenbao sl.tls.keyPassFile;
+
       # RFC 5424 facility name → numeric code (priority byte is
       # facility * 8 + severity).
       facilityCode = name: {
@@ -563,8 +574,16 @@ in
             lib.optional sl.enable "syslog (${sl.mode})"
           ));
         wantedBy = [ "multi-user.target" ];
-        after = [ "network-online.target" ];
-        wants = [ "network-online.target" ];
+        # If any sink path resolves inside the standalone OpenBao
+        # prefetch output directory, wait for that service so the
+        # file is guaranteed to exist before LoadCredential tries
+        # to read it.
+        after = [ "network-online.target" ]
+          ++ lib.optional (config.securix.openbao.enable or false && anyOpenbaoSecret)
+            "securix-openbao.service";
+        wants = [ "network-online.target" ]
+          ++ lib.optional (config.securix.openbao.enable or false && anyOpenbaoSecret)
+            "securix-openbao.service";
 
         serviceConfig = {
           Type = "simple";
