@@ -118,8 +118,14 @@ the network.
     };
 
     sinks.syslog = {
-      enable = true;                      # RFC 5425 over TLS by default
+      enable = true;
       endpoint = "siem.corp.local:6514";
+      # mode defaults to "tcp+tls" (RFC 5425 over TLS, port 6514).
+      # Alternatives, both of which emit an evaluation-time warning
+      # because they send security-relevant logs in cleartext:
+      #   "tcp" — plain TCP (RFC 6587), no encryption
+      #   "udp" — legacy BSD syslog (RFC 3164), lossy, no encryption
+      mode = "tcp+tls";
       facility = "authpriv";
       tls = {
         caFile = "/etc/ssl/certs/corp-ca.pem";
