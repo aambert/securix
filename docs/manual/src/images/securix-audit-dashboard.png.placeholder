@@ -1,0 +1,4 @@
+Save your Sécurix Audit dashboard screenshot (PNG) next to this placeholder
+as `securix-audit-dashboard.png` — the path is referenced from
+`docs/manual/src/user/log-shipping.md`. This `.placeholder` file can then
+be deleted.

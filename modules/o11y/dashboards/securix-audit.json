@@ -1,0 +1,203 @@
+{
+  "uid": "securix-audit",
+  "title": "Sécurix — Audit (ANSSI R73)",
+  "tags": ["securix", "audit", "anssi", "r73"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "5s",
+  "time": { "from": "now-30m", "to": "now" },
+  "annotations": { "list": [] },
+  "templating": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Audit events (range)",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "source_type:auditd",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "date_histogram", "field": "timestamp", "settings": { "interval": "1h", "min_doc_count": "0" } }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["sum"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Privilege-escalation events",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "audit_key:privilege-escalation",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "date_histogram", "field": "timestamp", "settings": { "interval": "1h", "min_doc_count": "0" } }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["sum"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Exec events",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "audit_key:exec",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "date_histogram", "field": "timestamp", "settings": { "interval": "1h", "min_doc_count": "0" } }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["sum"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 4,
+      "type": "barchart",
+      "title": "Events by audit key (ANSSI R73 categories)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "source_type:auditd",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "audit_key.keyword",
+              "settings": { "size": "20", "min_doc_count": "1", "order": "desc", "orderBy": "_count" }
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "orientation": "horizontal" } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Events/min by audit key",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "source_type:auditd",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            {
+              "id": "3",
+              "type": "terms",
+              "field": "audit_key.keyword",
+              "settings": { "size": "10", "min_doc_count": "1", "order": "desc", "orderBy": "_count" }
+            },
+            {
+              "id": "2",
+              "type": "date_histogram",
+              "field": "timestamp",
+              "settings": { "interval": "auto" }
+            }
+          ]
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 70, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "piechart",
+      "title": "Audit record type",
+      "gridPos": { "x": 0, "y": 12, "w": 6, "h": 8 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "source_type:auditd",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            {
+              "id": "2",
+              "type": "terms",
+              "field": "audit_type.keyword",
+              "settings": { "size": "10", "min_doc_count": "1" }
+            }
+          ]
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "right", "values": ["value", "percent"] },
+        "pieType": "donut"
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Audit log stream (latest 100)",
+      "gridPos": { "x": 6, "y": 12, "w": 18, "h": 12 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "source_type:auditd",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "raw_data", "settings": { "size": "100" } }],
+          "bucketAggs": []
+        }
+      ]
+    }
+  ]
+}

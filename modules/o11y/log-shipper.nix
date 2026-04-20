@@ -62,6 +62,62 @@ in
           replaying the historical journal into the collector.
         '';
       };
+
+      auditFile = {
+        enable = mkEnableOption "tail the auditd log file (/var/log/audit/audit.log) in addition to journald";
+
+        path = mkOption {
+          type = types.path;
+          default = "/var/log/audit/audit.log";
+          description = ''
+            Path to the auditd log file. Vector tails it with a
+            `file` source and parses the `type=...`, `msg=audit(…)`
+            and `key="..."` fields into `audit_type`, `audit_ts`,
+            `audit_seq` and `audit_key`. Useful because auditd
+            writes directly to this file and does not always route
+            to journald.
+          '';
+        };
+      };
+    };
+
+    filters = mkOption {
+      type = types.listOf (types.submodule {
+        options = {
+          name = mkOption {
+            type = types.strMatching "[a-zA-Z_][a-zA-Z0-9_]*";
+            description = "Filter name (used as the Vector transform id; must be a valid identifier).";
+          };
+          dropIf = mkOption {
+            type = types.str;
+            description = ''
+              VRL expression. Events for which the expression evaluates
+              to `true` are DROPPED at the transform stage — never
+              reach any sink. Use for source-side noise reduction
+              (e.g. suppress debug-level entries, ignore a noisy unit).
+            '';
+            example = ''to_int(.PRIORITY) ?? 6 > 6'';
+          };
+        };
+      });
+      default = [ ];
+      example = lib.literalExpression ''
+        [
+          { name = "drop_debug"; dropIf = "to_int(.PRIORITY) ?? 6 > 6"; }
+          { name = "drop_cron";  dropIf = ".SYSLOG_IDENTIFIER == \"CRON\""; }
+        ]
+      '';
+      description = ''
+        Ordered list of source-side filter transforms. Each runs on
+        the merged event stream after the built-in JSON parse, in
+        declaration order. Events are dropped when `dropIf`
+        evaluates to true; everything else falls through to the
+        sinks.
+
+        Filters run before routing, so a dropped event is dropped
+        for every enabled sink. Per-sink routing differences
+        require custom `extraSettings` on the sink.
+      '';
     };
 
     sinks.opensearch = {
@@ -289,30 +345,81 @@ in
 
       credDir = "/run/credentials/securix-log-shipper.service";
 
-      baseConfig = lib.recursiveUpdate {
+      # Merge parsed event stream as the single upstream for sinks.
+      # If filters are declared we chain a per-filter `filter`
+      # transform; `filterChain` names the final stage consumed by
+      # the sinks.
+      filterChain =
+        if cfg.filters == [ ] then "securix_parse"
+        else "securix_filter_${toString (builtins.length cfg.filters)}";
+
+      filterTransforms = lib.listToAttrs (
+        lib.imap1
+          (i: f: {
+            name = "securix_filter_${toString i}";
+            value = {
+              type = "filter";
+              inputs = [ (if i == 1 then "securix_parse" else "securix_filter_${toString (i - 1)}") ];
+              # `filter` KEEPS events matching `condition`; the
+              # user-facing knob is `dropIf`, so we negate.
+              condition = "!(${f.dropIf})";
+            };
+          })
+          cfg.filters
+      );
+
+      baseConfig = lib.recursiveUpdate (lib.recursiveUpdate {
         data_dir = "/var/lib/vector";
 
-        sources.securix_journal = {
-          type = "journald";
-          current_boot_only = cfg.sources.currentBootOnly;
-        } // optionalAttrs (cfg.sources.units != [ ]) {
-          include_units = cfg.sources.units;
+        # journald + optional auditd file source. Vector parses the
+        # audit record header into audit_type / audit_ts / audit_seq /
+        # audit_key; plain journald events still flow through the
+        # same parse stage below.
+        sources = {
+          securix_journal = {
+            type = "journald";
+            current_boot_only = cfg.sources.currentBootOnly;
+          } // optionalAttrs (cfg.sources.units != [ ]) {
+            include_units = cfg.sources.units;
+          };
+        } // optionalAttrs cfg.sources.auditFile.enable {
+          securix_audit_file = {
+            type = "file";
+            include = [ (toString cfg.sources.auditFile.path) ];
+            read_from = "beginning";
+          };
         };
 
-        # Best-effort JSON parse: unit stdout that is structured JSON
-        # gets its keys merged into the event; plaintext stays in
-        # `.message` untouched.
+        # Best-effort JSON parse on both sources: unit stdout that is
+        # structured JSON gets its keys merged; auditd records get
+        # their `type=...`, `msg=audit(ts:seq)` header and `key="…"`
+        # extracted into dedicated fields.
         transforms.securix_parse = {
           type = "remap";
-          inputs = [ "securix_journal" ];
+          inputs = [ "securix_journal" ]
+            ++ lib.optional cfg.sources.auditFile.enable "securix_audit_file";
           source = ''
             parsed, err = parse_json(.message)
             if err == null && is_object(parsed) {
               . = merge(., object!(parsed))
             }
+            if .source_type == "file" {
+              .source_type = "auditd"
+              .SYSLOG_IDENTIFIER = "auditd"
+              ._SYSTEMD_UNIT = "auditd.service"
+              m, me = parse_regex(.message, r'type=(?P<audit_type>[A-Z_]+)\s+msg=audit\((?P<audit_ts>\d+\.\d+):(?P<audit_seq>\d+)\)')
+              if me == null {
+                . = merge(., m)
+              }
+              k, ke = parse_regex(.message, r'key="(?P<audit_key>[^"]+)"')
+              if ke == null {
+                . = merge(., k)
+              }
+            }
           '';
         };
-      } (lib.recursiveUpdate os.extraSettings sl.extraSettings);
+      } { transforms = filterTransforms; })
+      (lib.recursiveUpdate os.extraSettings sl.extraSettings);
 
       # --------- OpenSearch sink ---------
       withOpenSearch = c:
@@ -320,8 +427,13 @@ in
         else lib.recursiveUpdate c {
           sinks.opensearch_logs = {
             type = "elasticsearch";
-            inputs = [ "securix_parse" ];
+            inputs = [ filterChain ];
             endpoints = [ os.endpoint ];
+            # OpenSearch 2.x (like Elasticsearch ≥ 8) removed the
+            # `_type` metadata field from the bulk API. Force the v8
+            # format so Vector omits it; the default "auto" picks v7
+            # against OpenSearch and every document gets a 400.
+            api_version = "v8";
             mode = "bulk";
             bulk.index = os.index;
             healthcheck.enabled = false;
@@ -396,7 +508,7 @@ in
         else lib.recursiveUpdate c {
           transforms.securix_syslog_format = {
             type = "remap";
-            inputs = [ "securix_parse" ];
+            inputs = [ filterChain ];
             source = syslogFormatVRL;
           };
           sinks.syslog_out = syslogSinkBase;
