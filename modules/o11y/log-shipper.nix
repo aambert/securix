@@ -207,15 +207,27 @@ in
 
       mode = mkOption {
         type = types.enum [ "tcp+tls" "tcp" "udp" ];
-        default = "tcp+tls";
+        # Default is plain TCP: matches the majority of on-premise
+        # collectors (rsyslog `imtcp`, syslog-ng `network()` driver)
+        # without extra CA / cert wiring. The module emits a loud
+        # evaluation-time warning whenever the transport is not
+        # `tcp+tls`, to make the cleartext choice explicit.
+        # Other possibilities:
+        #   - "tcp+tls" : RFC 5425 syslog over TLS (port 6514).
+        #                 Preferred for security-relevant logs
+        #                 crossing an untrusted network.
+        #   - "udp"     : RFC 3164 BSD syslog on UDP.
+        #                 Lossy, no encryption, legacy compat only.
+        default = "tcp";
         description = ''
           Transport mode:
 
+          - `tcp` (default): plain TCP (RFC 6587), no encryption.
+            Wide compatibility, trusted local segment only. Emits
+            an evaluation-time warning.
           - `tcp+tls`: RFC 5425 syslog over TLS. The only mode
-            appropriate for sending security-relevant logs across
+            appropriate for shipping security-relevant logs across
             an untrusted network.
-          - `tcp`: plain TCP (RFC 6587). Trusted local segment only.
-            Emits an evaluation-time warning.
           - `udp`: legacy BSD syslog (RFC 3164 wire framing on UDP).
             Lossy, no encryption. Emits an evaluation-time warning.
         '';

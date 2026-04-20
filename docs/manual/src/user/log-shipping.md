@@ -120,11 +120,12 @@ the network.
     sinks.syslog = {
       enable = true;
       endpoint = "siem.corp.local:6514";
-      # mode defaults to "tcp+tls" (RFC 5425 over TLS, port 6514).
-      # Alternatives, both of which emit an evaluation-time warning
-      # because they send security-relevant logs in cleartext:
-      #   "tcp" — plain TCP (RFC 6587), no encryption
-      #   "udp" — legacy BSD syslog (RFC 3164), lossy, no encryption
+      # Module default is "tcp" (plain RFC 6587, no encryption).
+      # Both the default and "udp" emit an evaluation-time warning.
+      # Other possibilities:
+      #   "tcp+tls" — RFC 5425 syslog over TLS (recommended for
+      #               traffic leaving the trusted segment)
+      #   "udp"     — legacy BSD syslog (RFC 3164), lossy
       mode = "tcp+tls";
       facility = "authpriv";
       tls = {
