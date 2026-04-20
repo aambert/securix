@@ -7,8 +7,8 @@ name: '[Sécurix] log-shipper CI'
 on:
   pull_request:
     paths:
-      - 'modules/o11y/log-shipper.nix'
-      - 'modules/o11y/dashboards/**'
+      - 'modules/log-shipper.nix'
+      - 'modules/log-shipper-dashboards/**'
       - 'docs/manual/src/user/log-shipping.md'
       - '.github/workflows/log-shipper-ci.yaml'
   push:
@@ -16,8 +16,8 @@ on:
       - main
       - 'feat/o11y-log-shipper'
     paths:
-      - 'modules/o11y/log-shipper.nix'
-      - 'modules/o11y/dashboards/**'
+      - 'modules/log-shipper.nix'
+      - 'modules/log-shipper-dashboards/**'
       - 'docs/manual/src/user/log-shipping.md'
       - '.github/workflows/log-shipper-ci.yaml'
   workflow_dispatch:
@@ -42,12 +42,12 @@ jobs:
           cat > /tmp/eval-options.nix <<'NIX'
           let
             pkgs = import <nixpkgs> {};
-            mod = import ./modules/o11y/log-shipper.nix {
+            mod = import ./modules/log-shipper.nix {
               inherit (pkgs) lib;
               inherit pkgs;
               config = { };
             };
-          in mod.options.securix.o11y.logShipper
+          in mod.options.securix.logShipper
           NIX
           nix-instantiate --eval --strict --json /tmp/eval-options.nix > /dev/null
           echo "✓ Module options parse cleanly"
@@ -82,7 +82,7 @@ jobs:
             minimal-opensearch)
               cat > /tmp/ci/scenario.nix <<'NIX'
               {
-                securix.o11y.logShipper = {
+                securix.logShipper = {
                   sources.units = [ "sshd.service" "sudo.service" "auditd.service" ];
                   sinks.opensearch = {
                     enable = true;
@@ -95,7 +95,7 @@ jobs:
             dual-sink-audit-filters)
               cat > /tmp/ci/scenario.nix <<'NIX'
               {
-                securix.o11y.logShipper = {
+                securix.logShipper = {
                   sources = {
                     units = [ "auditd.service" "sshd.service" "sudo.service" ];
                     auditFile.enable = true;
@@ -130,7 +130,7 @@ jobs:
                   fileSystems."/" = { device = "/dev/sda1"; fsType = "ext4"; };
                   system.stateVersion = "25.11";
                 })
-                ./modules/o11y/log-shipper.nix
+                ./modules/log-shipper.nix
                 scenario
               ];
             };
@@ -191,7 +191,7 @@ jobs:
           set -e
           JQ=$(nix-build '<nixpkgs>' -A jq --no-out-link)/bin/jq
           fail=0
-          for f in modules/o11y/dashboards/*.json; do
+          for f in modules/log-shipper-dashboards/*.json; do
             echo "--- $f ---"
             "$JQ" . "$f" > /dev/null
             UID_=$("$JQ" -r .uid "$f")
@@ -222,9 +222,9 @@ jobs:
           missing=0
           for p in \
             docs/manual/src/images/securix-audit-dashboard.png \
-            modules/o11y/dashboards/securix-log-overview.json \
-            modules/o11y/dashboards/securix-ssh-focus.json \
-            modules/o11y/dashboards/securix-audit.json
+            modules/log-shipper-dashboards/securix-log-overview.json \
+            modules/log-shipper-dashboards/securix-ssh-focus.json \
+            modules/log-shipper-dashboards/securix-audit.json
           do
             if [ ! -e "$p" ]; then
               echo "✗ $DOC references missing file: $p"

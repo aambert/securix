@@ -4,7 +4,6 @@
 
 {
   imports = [
-    ./log-shipper.nix
     ./logs.nix
     ./metrics.nix
   ];

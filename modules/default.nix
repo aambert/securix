@@ -28,6 +28,9 @@
     ./ssh-tpm-agent.nix
     # Audit logs
     ./auditd.nix
+    # Centralised log shipping via Vector (opt-in, journald ±
+    # /var/log/audit → OpenSearch and/or syslog)
+    ./log-shipper.nix
     # Data-only pertaining to the system
     ./self.nix
     # All the VPN code

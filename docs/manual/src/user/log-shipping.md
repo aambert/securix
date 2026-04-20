@@ -6,7 +6,7 @@ SPDX-License-Identifier: CC-BY-SA-4.0
 
 # Centralised log shipping
 
-`securix.o11y.logShipper` streams selected logs off a Sécurix
+`securix.logShipper` streams selected logs off a Sécurix
 workstation through a single [Vector](https://vector.dev) instance to
 one or both of:
 
@@ -68,7 +68,7 @@ the network.
 
 ```nix
 {
-  securix.o11y.logShipper = {
+  securix.logShipper = {
     sources.units = [ "sshd.service" "sudo.service" "auditd.service" ];
 
     sinks.opensearch = {
@@ -88,7 +88,7 @@ the network.
 
 ```nix
 {
-  securix.o11y.logShipper = {
+  securix.logShipper = {
     sources = {
       units = [ "auditd.service" "sshd.service" "sudo.service" ];
       auditFile.enable = true;           # tail /var/log/audit/audit.log
@@ -142,7 +142,7 @@ the network.
 
 ```nix
 {
-  securix.o11y.logShipper.sinks.syslog = {
+  securix.logShipper.sinks.syslog = {
     enable = true;
     endpoint = "legacy-syslog.lan:514";
     mode = "udp";                         # emits an eval-time warning
@@ -160,7 +160,7 @@ choice.
 ## Dashboards (Grafana + `grafana-opensearch-datasource`)
 
 Three ready-to-provision JSON dashboards ship in
-`modules/o11y/dashboards/`. They expect a Grafana datasource
+`modules/log-shipper-dashboards/`. They expect a Grafana datasource
 with `uid: opensearch` backed by the `grafana-opensearch-datasource`
 plugin, `timeField: timestamp`, `logMessageField: message`,
 `logLevelField: PRIORITY`, `database: securix-*`.
@@ -204,7 +204,7 @@ providers:
       path: /var/lib/grafana/dashboards/securix
 ```
 
-Copy the JSON files from `modules/o11y/dashboards/` into
+Copy the JSON files from `modules/log-shipper-dashboards/` into
 `/var/lib/grafana/dashboards/securix/` and restart Grafana — the
 dashboards appear under the **Sécurix** folder.
 

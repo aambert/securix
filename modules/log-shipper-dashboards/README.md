@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 Aurélien Ambert <aurelien.ambert@proton.me>
 SPDX-License-Identifier: CC-BY-SA-4.0
 -->
 
-# Grafana dashboards for `securix.o11y.logShipper`
+# Grafana dashboards for `securix.logShipper`
 
 Ready-to-provision JSON dashboards for Grafana ≥ 10 with the
 `grafana-opensearch-datasource` plugin (≥ 2.24).
@@ -41,7 +41,7 @@ datasources:
 
 ## Index + field expectations
 
-Produced by `securix.o11y.logShipper` with `sinks.opensearch.index`
+Produced by `securix.logShipper` with `sinks.opensearch.index`
 defaulting to `securix-%Y.%m.%d`. Key fields used by the panels:
 
 - `timestamp` (date) — Vector's ingest timestamp

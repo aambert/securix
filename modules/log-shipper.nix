@@ -16,7 +16,7 @@
 
 { config, lib, pkgs, ... }:
 let
-  cfg = config.securix.o11y.logShipper;
+  cfg = config.securix.logShipper;
   inherit (lib)
     mkEnableOption
     mkIf
@@ -27,7 +27,7 @@ let
     ;
 in
 {
-  options.securix.o11y.logShipper = {
+  options.securix.logShipper = {
     package = mkOption {
       type = types.package;
       default = pkgs.vector;
@@ -549,11 +549,11 @@ in
       # the whole point of centralised logging.
       warnings =
         lib.optional (sl.enable && sl.mode != "tcp+tls")
-          "securix.o11y.logShipper.sinks.syslog.mode = \"${sl.mode}\": logs travel UNENCRYPTED to ${sl.endpoint}. Use \"tcp+tls\" (RFC 5425, default port 6514) unless you really need legacy compatibility."
+          "securix.logShipper.sinks.syslog.mode = \"${sl.mode}\": logs travel UNENCRYPTED to ${sl.endpoint}. Use \"tcp+tls\" (RFC 5425, default port 6514) unless you really need legacy compatibility."
         ++ lib.optional (os.enable && !os.tls.verifyCertificate)
-          "securix.o11y.logShipper.sinks.opensearch.tls.verifyCertificate = false: the TLS channel to ${os.endpoint} is established but the peer identity is NOT checked. Lab only."
+          "securix.logShipper.sinks.opensearch.tls.verifyCertificate = false: the TLS channel to ${os.endpoint} is established but the peer identity is NOT checked. Lab only."
         ++ lib.optional (sl.enable && sl.mode == "tcp+tls" && !sl.tls.verifyCertificate)
-          "securix.o11y.logShipper.sinks.syslog.tls.verifyCertificate = false: TLS is enabled but the peer identity is NOT checked. Lab only.";
+          "securix.logShipper.sinks.syslog.tls.verifyCertificate = false: TLS is enabled but the peer identity is NOT checked. Lab only.";
 
       systemd.services.securix-log-shipper = {
         description =
