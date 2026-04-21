@@ -23,8 +23,9 @@ plusieurs sites est envisageable mais n'est pas traitée ici.
   baselines entre administrations. La divergence se fait par overlay
   déclaratif, pas par fork du noyau.
 - **Composer plutôt que réinventer** : l'écosystème s'appuie sur des
-  briques existantes auditables (lanzaboote, OpenBao, age, Kanidm,
-  Clan, comin, PowerDNS, attic), pas sur un monolithe propriétaire.
+  briques existantes auditables (lanzaboote, OpenBao, age, Keycloak,
+  OpenTofu, nixos-anywhere, PowerDNS, Harmonia), pas sur un monolithe
+  propriétaire.
 - **Activation explicite (opt-in)** pour tout changement disruptif.
 - **Assertions avec message clair** plutôt que `mkForce` silencieux,
   en pointant vers `security.anssi.excludes` ou équivalent.
@@ -101,13 +102,14 @@ déchiffrement automatique à détourner.
 | Visualisation et tableaux de bord | Grafana | Serveur local |
 | Secrets statiques versionnés | `age` / `sops-nix` | Flake admin |
 | Secrets dynamiques, PKI, révocation | OpenBao | Serveur local |
-| Identité utilisateur et FIDO2 | Kanidm | Serveur local |
-| Installation initiale et services | Clan | Orchestrateur local |
-| MCO en pull continu | `comin` | Poste |
+| Identité utilisateur et FIDO2 (SSO) | Keycloak | Serveur local |
+| Infrastructure-as-code (serveurs + DNS + Keycloak + OpenBao) | OpenTofu | Runner CI |
+| Installation initiale du poste | `nixos-anywhere` (push SSH) | Orchestrateur local |
+| Mises à jour de configuration (MCO) | `rebuild-nixos` / `deploy.sh` (push SSH) | Orchestrateur local → poste |
 | Annonce et heartbeat | phone-home | Poste ↔ Runner |
 | Inventaire DNS et API | PowerDNS | Serveur local |
 | Sources git | Forgejo local | Serveur local |
-| Cache binaire Nix | `attic` | Serveur local |
+| Cache binaire Nix | Harmonia | Serveur local |
 | Runner de pipeline | Forgejo Actions ou équivalent | Serveur local |
 | Signature Secure Boot | Service centralisé HSM + OpenBao | Serveur local (coffre pour PK) |
 | Attestation TPM continue | Quote PCR 0/2/4/7 + hash closure | Poste → OpenBao |
@@ -127,13 +129,13 @@ flowchart LR
         D[PowerDNS]
         R[Runner CI]
         X[PXE installeur]
+        DEP[Orchestrateur SSH]
     end
 
     subgraph Poste
         U[UKI signee]
         F[LUKS + FIDO2]
         PH[phone-home]
-        CM[comin]
         Y[Yubikey user]
     end
 
@@ -143,14 +145,13 @@ flowchart LR
     U --> F
     Y --> F
     F --> PH
-    F --> CM
     PH -->|annonce| R
-    R -->|API DNS| D
-    R -->|API PKI| B
+    R -->|OpenTofu API| D
+    R -->|OpenTofu API| B
     R -->|commit| G
-    CM -->|pull flake| G
-    CM -->|pull closures| C
-    CM -->|cert| B
+    R --> DEP
+    DEP -->|nixos-anywhere| F
+    DEP -->|rebuild-nixos| F
 ```
 
 Chaque couche est une contribution distincte, versionnable et
@@ -170,14 +171,16 @@ offline** différent de la cible cloud de la référence.
 |---|---|---|---|
 | Coffre secrets | Vault | OpenBao (compatible API) | Aligné |
 | Forge git | Forgejo | Forgejo | Aligné |
-| Cache binaire | Harmonia | Harmonia (ou `attic`) | Aligné |
+| Cache binaire | Harmonia | Harmonia | Aligné |
 | Observabilité | VictoriaMetrics + VictoriaLogs + Grafana | VictoriaMetrics + VictoriaLogs + Grafana | Aligné |
 | Secrets chiffrés au repos | `age` | `age` | Aligné |
-| SSO | Keycloak | Kanidm (proposition 1), Keycloak (proposition 2) | Divergent par défaut, Keycloak cité |
+| SSO | Keycloak | Keycloak (proposition 1), Kanidm (alternative plus légère) | Aligné |
 | VPN | Netbird | Netbird (option) ou WireGuard + rosenpass pour PQC | Aligné avec Netbird comme option |
 | DNS | OVH cloud via Terraform | PowerDNS self-hosted | **Divergent** (contrainte offline) |
 | Compute | VMs cloud (OpenStack / Outscale) | Matériel physique onprem | **Divergent** (contrainte onprem) |
-| Déploiement | Terraform + push SSH (`deploy.sh`) | `comin` pull + Clan bootstrap | **Divergent** (postes nomades) |
+| Infrastructure-as-code | Terraform | OpenTofu (fork libre, même HCL) | Aligné |
+| Installation initiale | nixos-anywhere (SSH) | nixos-anywhere (SSH) | Aligné |
+| Mises à jour poste | `rebuild-nixos` / `deploy.sh` (SSH) | `rebuild-nixos` / `deploy.sh` (SSH) | Aligné |
 
 Les divergences structurelles (DNS, compute, déploiement) découlent
 du contexte monosite offline et ne remettent pas en cause la
@@ -212,22 +215,28 @@ PKCS#11, mais il ne conditionne plus le montage du disque.
 │ Artefacts statiques (git, versionnés) :                        │
 │  • Flake admin (profil Sécurix + overlays + secrets chiffrés  │
 │    age pour les destinataires autorisés)                      │
-│  • Cache binaire Nix signé par clé admin (attic)              │
+│  • Cache binaire Nix signé par clé admin (Harmonia)           │
 │  • Image installeur NixOS signée                              │
 │                                                                │
 │ Serveurs actifs locaux :                                       │
 │  • Serveur PXE/iPXE                                           │
 │  • Forgejo local (miroir des sources, éventuellement          │
 │    répliqué depuis un amont externe)                          │
-│  • attic local (cache binaire)                                │
+│  • Harmonia local (cache binaire)                             │
 │  • OpenBao local (PKI, secrets dynamiques, audit)             │
 │  • PowerDNS local (zone déléguée + API inventaire)            │
 │  • Runner de pipeline (Forgejo Actions ou équivalent)         │
 │  • Endpoint phone-home                                        │
-│  • Kanidm (identité utilisateur + FIDO2)                      │
+│  • Keycloak (identité utilisateur, FIDO2/WebAuthn, OIDC)      │
 │  • Service de signature Secure Boot (HSM + OpenBao)           │
 │  • VictoriaMetrics + VictoriaLogs (stockage observabilité)    │
 │  • Grafana (visualisation et tableaux de bord)                │
+│  • Netbird (VPN zero-trust, joignabilité des postes nomades)  │
+│                                                                │
+│ Orchestration côté serveur :                                   │
+│  • OpenTofu (infrastructure-as-code, providers PowerDNS,      │
+│    OpenBao, Keycloak)                                          │
+│  • nixos-anywhere, rebuild-nixos (push SSH vers les postes)   │
 │                                                                │
 │ Clés hors ligne (coffre physique, double contrôle) :           │
 │  • Clé privée Secure Boot PK (racine)                         │
@@ -254,7 +263,7 @@ Artefacts concernés par la réplication :
 | Artefact | Mécanisme | Fréquence typique | Vérification |
 |---|---|---|---|
 | Sources git | Miroir Forgejo / `git clone --mirror` | Quotidien ou sur événement | Signature des commits |
-| Cache binaire Nix | `attic push` / `attic pull` | Hebdomadaire ou sur MAJ | Signature des closures |
+| Cache binaire Nix | `nix copy` + synchronisation Harmonia | Hebdomadaire ou sur MAJ | Signature des closures |
 | Images installeur | `nix copy` vers cache local | Sur MAJ | Signature amont |
 | Listes de révocation (certs, FIDO2, Secure Boot `dbx`) | Pull HTTP + signature `age` | Horaire à quotidien | Signature `age` |
 | Sauvegardes OpenBao | Non répliqué | — | Souveraineté |
@@ -281,11 +290,11 @@ proposée :
 <admin>.gouv.fr                                (admin existante)
  └── securix.<admin>.gouv.fr                    (délégation dédiée)
       ├── git.securix.<admin>.gouv.fr          (forge locale)
-      ├── cache.securix.<admin>.gouv.fr        (attic local)
+      ├── cache.securix.<admin>.gouv.fr        (Harmonia local)
       ├── openbao.securix.<admin>.gouv.fr      (OpenBao local)
       ├── fleet.securix.<admin>.gouv.fr        (endpoint phone-home)
       ├── pxe.securix.<admin>.gouv.fr          (serveur PXE)
-      ├── kanidm.securix.<admin>.gouv.fr       (identité utilisateur)
+      ├── auth.securix.<admin>.gouv.fr         (Keycloak, SSO)
       └── machines/<serial>.securix.<admin>.gouv.fr
                                                 (un enregistrement
                                                  par poste, créé par
@@ -294,7 +303,7 @@ proposée :
 
 **Rôles du DNS** :
 
-- Discovery des services pour Clan, comin, phone-home, OpenBao
+- Discovery des services pour l'orchestrateur SSH, phone-home et OpenBao
 - Source de SAN pour les certificats TLS émis par OpenBao PKI
 - Identité des postes (A/AAAA + PTR) cohérente avec les certificats
 - Inventaire consultable via enregistrements TXT signés DNSSEC
@@ -385,10 +394,10 @@ par double contrôle humain.
 | 8 | Enrôlement Secure Boot (centralisé) | L'installeur récupère les fichiers `PK.auth`, `KEK.auth`, `db.auth` depuis le cache local (distribués par le service de signature centralisé). Application via `sbctl enroll-keys`. Retrait des clés Microsoft selon politique. Aucune clé privée ne transite. | `sbctl`, `efi-updatevar` |
 | 9 | Partitionnement | Application du plan déclaratif dérivé du hardware : ESP FAT32 + conteneur LUKS2 + BTRFS/LVM. | `disko` |
 | 10 | Chiffrement disque (FIDO2 + clé de recouvrement) | Création LUKS2 avec volume key aléatoire. Enrôlement de la Yubikey principale : `systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes`. Enrôlement de la Yubikey de secours. Génération d'une clé de recouvrement (≥32 caractères aléatoires), enrôlement en keyslot passphrase. Chiffrement `age` de cette clé pour l'autorité de recouvrement, archivage dans OpenBao. Effacement sécurisé de la copie temporaire. | `systemd-cryptenroll`, `age` |
-| 11 | Installation système | Installation de NixOS depuis le flake admin et le cache binaire local. Les secrets `age` destinés au poste sont déchiffrés à l'activation. | `clan machines install` (ou `nixos-anywhere`), `agenix` |
+| 11 | Installation système | Installation de NixOS via `nixos-anywhere` (push SSH depuis l'orchestrateur local) depuis le flake admin et le cache binaire local. Les secrets `age` destinés au poste sont déchiffrés à l'activation. | `nixos-anywhere`, `agenix` |
 | 12 | Génération UKI signée | Demande de signature au service centralisé via OpenBao, qui vérifie le certificat machine et la quote TPM avant de signer. | `lanzaboote`, service centralisé |
 | 13 | Premier démarrage | Secure Boot vérifie l'UKI. L'utilisateur insère et valide sa Yubikey principale pour déchiffrer LUKS. Le système démarre. | `systemd-cryptsetup` + FIDO2 |
-| 14 | Attestation initiale et passage en MCO | Service `first-boot-attestation` : envoi à OpenBao d'un état initial (quote TPM PCR 0/2/4/7, hash closure, hash UKI). Activation de `comin` pour le pull continu depuis `git.securix.<admin>.gouv.fr`. Heartbeat phone-home persistant. Enrôlement utilisateur Kanidm (Yubikey déjà présentes, référencement central). | Client OpenBao, `comin`, Kanidm |
+| 14 | Attestation initiale et passage en MCO | Service `first-boot-attestation` : envoi à OpenBao d'un état initial (quote TPM PCR 0/2/4/7, hash closure, hash UKI). Le poste devient joignable en SSH par l'orchestrateur local (via VPN Netbird si hors réseau admin), les mises à jour sont appliquées par `rebuild-nixos` / `deploy.sh`. Heartbeat phone-home persistant. Enrôlement utilisateur Keycloak (Yubikey déjà présentes, enregistrement des credentials WebAuthn côté serveur). | Client OpenBao, `rebuild-nixos`, Keycloak |
 
 ### 4.7 Défenses structurelles
 
@@ -475,12 +484,18 @@ Trois principes transverses :
 ┌─ Runner CI local ─────────────────────────────────┐
 │ 1. Authentification (cert + signature)             │
 │ 2. Attribution IP                                  │
-│ 3. API PowerDNS : enregistrements A/PTR/TXT        │
-│ 4. API OpenBao PKI : émission cert machine         │
-│ 5. Commit flake : inventory/<serial>.yaml,         │
+│ 3. `tofu apply` :                                  │
+│    - provider PowerDNS : enregistrements A/PTR/TXT │
+│    - provider OpenBao : émission cert machine,     │
+│      policies et rôles                             │
+│    - provider Keycloak : utilisateur et rôles si   │
+│      pertinents                                    │
+│ 4. Commit flake : inventory/<serial>.yaml,         │
 │    machines/<serial>.nix (auto-mergé si liste      │
 │    blanche, sinon revue humaine)                   │
-│ 6. Notification au poste : config prête            │
+│ 5. Déploiement via nixos-anywhere (push SSH)       │
+│    depuis l'orchestrateur vers le poste cible      │
+│ 6. Notification au poste : configuration appliquée │
 └───────────────────────────────────────────────────┘
 ```
 
@@ -506,28 +521,32 @@ Boot (setup/user/disabled), réseau (NICs), sécurité (IOMMU, virt).
 Ont été écartés pour ce contexte :
 
 - NixOps, morph : en déclin ou moins maintenus
-- Colmena, deploy-rs : push SSH uniquement, mal adaptés aux postes
-  nomades et aux environnements déconnectés
+- NixOps, morph : en déclin ou moins maintenus
+- Clan, comin, Colmena, deploy-rs, Nixinate, pushnix, krops :
+  alternatives valables mais non alignées sur l'implémentation de
+  référence `cloud-gouv`
 - KubeNix, KuberNix, Nixlets : Kubernetes, hors scope
 - Nixery : registry de conteneurs, hors scope
 - terraform-nixos, terranix : infra cloud, mauvaise granularité
-- Nixinate, pushnix, krops : minimalistes, sans secrets ni services
 
-Triangle retenu :
+Chaîne retenue, alignée sur l'implémentation de référence
+`cloud-gouv/securix-infra-reference-implementation` :
 
-| Outil | Sens | Rôle dans l'écosystème |
-|---|---|---|
-| **Clan** | Push SSH (+ vars pull) | Installation initiale et services lourds, catalogue communautaire |
-| **comin** | Pull git côté poste | MCO en régime permanent, adapté postes nomades et air-gap |
-| **phone-home** | Poste → serveur | Inventaire matériel, trigger du pipeline auto-config |
+| Outil | Rôle dans l'écosystème |
+|---|---|
+| **OpenTofu** | Infrastructure-as-code : provisionnement des serveurs locaux, configuration déclarative de PowerDNS, OpenBao (policies, PKI), Keycloak (realm, clients, utilisateurs) via leurs providers respectifs. Fork libre de Terraform, même syntaxe HCL, gouvernance Linux Foundation. |
+| **nixos-anywhere** | Installation initiale du poste via SSH (depuis l'orchestrateur local), à partir d'un environnement d'installation contrôlé. Utilise `disko` pour le partitionnement déclaratif. |
+| **`rebuild-nixos` / `deploy.sh`** | Mises à jour de configuration NixOS via SSH depuis l'orchestrateur, modèle push identique à la référence cloud-gouv. Adapté à une flotte joignable en permanence (LAN admin ou VPN Netbird). |
+| **phone-home** | Annonce par le poste de son identité matérielle au bootstrap et heartbeat persistant, trigger du pipeline auto-config côté orchestrateur. |
 
-Le choix entre push (Clan) et pull (comin) est structurant. Pour
-des postes admin gov avec nomadisme courant, pull via comin est
-recommandé pour le quotidien. Clan reste pertinent au bootstrap.
+Le modèle push (SSH depuis l'orchestrateur) suppose que le poste
+soit joignable. Pour les cas de nomadisme, le VPN Netbird (décrit
+dans l'infrastructure locale) maintient cette joignabilité depuis
+l'extérieur du site.
 
-Cache binaire : `attic` (fédéré, moderne) est un choix naturel ;
-`harmonia` est une alternative minimaliste. Le doc reste neutre sur
-ce choix, chaque administration peut décider selon ses préférences.
+Cache binaire : **Harmonia** (aligné sur la référence cloud-gouv).
+Le module NixOS correspondant (`services.harmonia`) gère le
+chargement de la clé de signature depuis un fichier chiffré `age`.
 
 ### 5.5 Observabilité et attestation continue
 
@@ -578,24 +597,36 @@ dépendance à une infrastructure Windows et une complexité de MCO
 disproportionnée. En contrepartie, il faut fournir des alternatives
 industrielles.
 
-**Proposition 1 — Kanidm (recommandation par défaut)**. Serveur
-d'identité moderne en Rust, WebAuthn/FIDO2 natif, groupes et RBAC,
-PAM via `pam_kanidm`, OIDC pour les services web, LDAP en lecture
-seule si nécessaire. Module NixOS officiel.
+**Proposition 1 — Keycloak (recommandation par défaut)**. Solution
+d'identité et de SSO mature, retenue par l'implémentation de
+référence `cloud-gouv/securix-infra-reference-implementation`.
+Elle apporte WebAuthn/FIDO2 natif, OIDC, SAML, fédération,
+workflows d'authentification adaptatifs, délégation multi-niveaux
+et une grande couverture d'intégrations applicatives. Le module
+NixOS `services.keycloak` est mature et largement utilisé.
+L'intégration PAM côté poste se fait via OIDC (par exemple
+`pam_oauth2`) ou via un client SSSD configuré pour Keycloak.
 
-**Proposition 2 — Authentik ou Keycloak**. Pour les administrations
-déjà outillées. Plus lourd, plus riche (workflows, délégation).
+**Proposition 2 — Kanidm (alternative plus légère)**. Serveur
+d'identité moderne en Rust, WebAuthn/FIDO2 natif également, avec
+PAM via `pam_kanidm`. Empreinte plus réduite, surface d'attaque
+plus faible. Fonctionnellement moins riche que Keycloak (pas de
+workflows adaptatifs complexes, fédération plus limitée).
+Intéressant pour une flotte homogène qui n'a pas besoin de la
+richesse de Keycloak.
 
-**Proposition 3 — OpenBao + FIDO2 direct**. Pour une petite flotte
-(< 50 postes), OpenBao sert directement de référentiel d'identité.
+**Proposition 3 — OpenBao + FIDO2 direct**. Pour une très petite
+flotte (< 50 postes), OpenBao peut servir directement de
+référentiel d'identité, sans serveur SSO dédié.
 
 ### 6.3 Cycle de vie utilisateur
 
-- **Arrivée** : création dans Kanidm, enrôlement de **deux**
+- **Arrivée** : création dans Keycloak, enrôlement de **deux**
   Yubikey FIDO2 (principale et sauvegarde), émission d'un
   certificat utilisateur par OpenBao PKI.
-- **Changement de rôle** : modification des groupes dans Kanidm,
-  propagation automatique via `pam_kanidm`.
+- **Changement de rôle** : modification des groupes et rôles dans
+  Keycloak, propagation via OIDC aux applications et au PAM du
+  poste au prochain cycle d'authentification.
 - **Perte d'une Yubikey** : révocation de la clé publique,
   utilisation de la Yubikey de secours, émission d'une Yubikey de
   remplacement après vérification d'identité.
@@ -606,15 +637,18 @@ déjà outillées. Plus lourd, plus riche (workflows, délégation).
 
 ### 6.4 Intégration NixOS
 
-Modules existants mobilisables : `services.kanidm` (officiel),
-`security.pam.services.<name>.kanidm`, `services.kanidm-ssh-authorizer`.
+Modules existants mobilisables : `services.keycloak` (module NixOS
+officiel), intégration PAM via `pam_oauth2` ou SSSD configuré pour
+le provider OIDC de Keycloak, intégration SSH via les clés publiques
+exposées par l'API Keycloak.
 
 Une option Sécurix pourrait synthétiser ces choix :
 
 ```nix
 services.securix.identity = {
-  backend = "kanidm";
-  server = "kanidm.securix.<admin>.gouv.fr";
+  backend = "keycloak";
+  server = "auth.securix.<admin>.gouv.fr";
+  realm = "securix";
   enrollment.requireTwoFidoKeys = true;
   passwordFallback = {
     enable = true;
@@ -654,11 +688,13 @@ services.securix.identity = {
 - openbao/openbao, <https://github.com/openbao/openbao>.
 - ryantm/agenix, <https://github.com/ryantm/agenix>.
 - Mic92/sops-nix, <https://github.com/Mic92/sops-nix>.
+- Keycloak, <https://www.keycloak.org/>.
 - kanidm/kanidm, <https://github.com/kanidm/kanidm>.
 - clan.lol, <https://clan.lol>.
-- nlewo/comin, <https://github.com/nlewo/comin>.
 - nix-community/harmonia, <https://github.com/nix-community/harmonia>.
-- zhaofengli/attic, <https://github.com/zhaofengli/attic>.
+- nix-community/nixos-anywhere, <https://github.com/nix-community/nixos-anywhere>.
+- OpenTofu, <https://opentofu.org/>.
+- Netbird, <https://netbird.io/>.
 - VictoriaMetrics, <https://victoriametrics.com/>.
 - VictoriaLogs, <https://docs.victoriametrics.com/victorialogs/>.
 - PowerDNS Authoritative, <https://doc.powerdns.com/authoritative/>.
