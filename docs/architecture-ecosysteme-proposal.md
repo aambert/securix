@@ -2,17 +2,17 @@
 
 Ce document est une proposition, ouverte à discussion, sur l'architecture
 cible d'un poste de travail Sécurix et de l'écosystème NixOS qui
-l'entoure, dans un contexte de déploiement **multi-administrations
-gérées de manière uniforme** et **installations offline** appuyées sur
-des miroirs locaux par site.
+l'entoure, dans un contexte **monosite**, avec **installations offline**
+appuyées sur un miroir local, éventuellement répliqué depuis un amont
+externe.
 
 Il ne prétend pas prescrire : chaque proposition est défendable
 isolément et peut être adoptée, adaptée ou rejetée. Le contexte
 sous-jacent est le durcissement d'un poste admin au sens des guides
 ANSSI PA-022 (administration sécurisée des SI) et NT-28 (durcissement
-GNU/Linux), avec l'ambition de rester cohérent entre plusieurs
-administrations tout en préservant la souveraineté de chacune sur ses
-données et ses clés.
+GNU/Linux), avec la souveraineté de l'administration sur ses données
+et ses clés comme ligne directrice. Une extension ultérieure à
+plusieurs sites est envisageable mais n'est pas traitée ici.
 
 ## 1. Principes directeurs
 
@@ -30,9 +30,9 @@ données et ses clés.
   en pointant vers `security.anssi.excludes` ou équivalent.
 - **Registre de flakes indépendants** : chaque satellite est un flake
   distinct, versionné et signé.
-- **Installations offline** : un site peut provisionner et exploiter
-  ses postes sans connectivité externe, grâce à des miroirs locaux
-  répliqués depuis un amont éventuel.
+- **Installations offline** : le provisionnement et l'exploitation
+  des postes se font sans connectivité externe, grâce à un miroir
+  local éventuellement répliqué depuis un amont externe.
 
 ## 2. Modèle de menace retenu
 
@@ -98,16 +98,16 @@ déchiffrement automatique à détourner.
 | Microségmentation réseau | `nixos-microsegebpf` | Poste (L2) |
 | Journalisation | Vector (log-shipper) | Poste (L2) |
 | Secrets statiques versionnés | `age` / `sops-nix` | Flake admin |
-| Secrets dynamiques, PKI, révocation | OpenBao | Serveur local par site |
-| Identité utilisateur et FIDO2 | Kanidm | Serveur local par admin |
+| Secrets dynamiques, PKI, révocation | OpenBao | Serveur local |
+| Identité utilisateur et FIDO2 | Kanidm | Serveur local |
 | Installation initiale et services | Clan | Orchestrateur local |
 | MCO en pull continu | `comin` | Poste |
 | Annonce et heartbeat | phone-home | Poste ↔ Runner |
-| Inventaire DNS et API | PowerDNS | Serveur local par site |
-| Sources git | Forgejo local | Serveur local par site |
-| Cache binaire Nix | `attic` | Serveur local par site |
-| Runner de pipeline | Forgejo Actions ou équivalent | Serveur local par site |
-| Signature Secure Boot | Service centralisé HSM + OpenBao | Administration centrale |
+| Inventaire DNS et API | PowerDNS | Serveur local |
+| Sources git | Forgejo local | Serveur local |
+| Cache binaire Nix | `attic` | Serveur local |
+| Runner de pipeline | Forgejo Actions ou équivalent | Serveur local |
+| Signature Secure Boot | Service centralisé HSM + OpenBao | Serveur local (coffre pour PK) |
 | Attestation TPM continue | Quote PCR 0/2/4/7 + hash closure | Poste → OpenBao |
 
 ### Schéma d'ensemble
@@ -173,7 +173,7 @@ fournit l'attestation continue (quote PCR 0/2/4/7, hash de la closure
 active, hash de l'UKI en cours) et peut stocker des clés applicatives
 PKCS#11, mais il ne conditionne plus le montage du disque.
 
-### 4.2 Infrastructure par site
+### 4.2 Infrastructure locale
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -187,17 +187,15 @@ PKCS#11, mais il ne conditionne plus le montage du disque.
 │                                                                │
 │ Serveurs actifs locaux :                                       │
 │  • Serveur PXE/iPXE                                           │
-│  • Forgejo local (miroir des sources)                         │
+│  • Forgejo local (miroir des sources, éventuellement          │
+│    répliqué depuis un amont externe)                          │
 │  • attic local (cache binaire)                                │
 │  • OpenBao local (PKI, secrets dynamiques, audit)             │
-│  • PowerDNS local (zones déléguées + API inventaire)          │
+│  • PowerDNS local (zone déléguée + API inventaire)            │
 │  • Runner de pipeline (Forgejo Actions ou équivalent)         │
 │  • Endpoint phone-home                                        │
-│                                                                │
-│ Services mutualisés par administration :                       │
 │  • Kanidm (identité utilisateur + FIDO2)                      │
-│  • Service de signature Secure Boot centralisé (HSM +         │
-│    OpenBao), adressé depuis les sites                         │
+│  • Service de signature Secure Boot (HSM + OpenBao)           │
 │                                                                │
 │ Clés hors ligne (coffre physique, double contrôle) :           │
 │  • Clé privée Secure Boot PK (racine)                         │
@@ -212,35 +210,29 @@ PKCS#11, mais il ne conditionne plus le montage du disque.
                 └──────────────────────────┘
 ```
 
-### 4.3 Déploiement offline multi-sites
+### 4.3 Réplication optionnelle depuis un amont externe
 
-Trois topologies de réplication sont envisageables selon la taille
-et la maturité de l'administration.
+L'infrastructure locale fonctionne en autonomie. Un amont externe
+(forge souveraine, forge interministérielle ou dépôt partagé) peut
+alimenter périodiquement le miroir local, mais sa disponibilité
+n'est jamais une condition du fonctionnement courant.
 
-1. **Hub-and-spoke** : un amont souverain (forge d'administration
-   centrale ou forge interministérielle) vers tous les sites.
-   Cadence contrôlée centralement, gouvernance simple. Recommandée
-   par défaut.
-2. **Cascade** : administration centrale → site principal d'une
-   administration → sites périphériques. Utile pour les
-   administrations territoriales.
-3. **Autonomie totale** : site sans amont, flake local, PKI propre.
-   Bootstrap par export physique initial.
-
-Réplication des artefacts :
+Artefacts concernés par la réplication :
 
 | Artefact | Mécanisme | Fréquence typique | Vérification |
 |---|---|---|---|
-| Sources git | Mirroir Forgejo / `git clone --mirror` | Quotidien ou sur événement | Signature des commits |
+| Sources git | Miroir Forgejo / `git clone --mirror` | Quotidien ou sur événement | Signature des commits |
 | Cache binaire Nix | `attic push` / `attic pull` | Hebdomadaire ou sur MAJ | Signature des closures |
 | Images installeur | `nix copy` vers cache local | Sur MAJ | Signature amont |
 | Listes de révocation (certs, FIDO2, Secure Boot `dbx`) | Pull HTTP + signature `age` | Horaire à quotidien | Signature `age` |
-| Sauvegardes OpenBao admin | Non répliqué côté site | — | Souveraineté |
+| Sauvegardes OpenBao | Non répliqué | — | Souveraineté |
 
-Bootstrap d'un nouveau site : trois cas distincts (site avec accès
-internet initial, site air-gap dès le départ par export physique,
-site autonome sans amont). Dans tous les cas, l'amorçage est
-reproductible et documenté.
+Bootstrap initial : trois cas distincts peuvent se présenter, un
+démarrage avec accès internet initial puis bascule offline, un
+démarrage air-gap dès le départ par export physique depuis un
+amont, ou une autonomie totale sans amont avec flake et PKI
+propres. Dans tous les cas, l'amorçage est reproductible et
+documenté.
 
 Risque amont compromis : la signature obligatoire des artefacts, la
 vérification systématique en réception, un délai de coexistence
@@ -249,21 +241,23 @@ sont les contre-mesures minimales.
 
 ### 4.4 PowerDNS et inventaire DNS
 
-Chaque site exploite une instance PowerDNS locale, configurée de
-manière déclarative via le module NixOS `services.powerdns`. La
-hiérarchie de zones proposée :
+Une instance PowerDNS locale est configurée de manière déclarative
+via le module NixOS `services.powerdns`. La hiérarchie de zones
+proposée :
 
 ```
-<admin>.gouv.fr                                    (admin existante)
- └── securix.<admin>.gouv.fr                        (délégation dédiée)
-      ├── <site1>                                   (sous-zone par site)
-      │    ├── git.<site1>                 A        (forge locale)
-      │    ├── cache.<site1>               A        (attic local)
-      │    ├── openbao.<site1>             A        (OpenBao local)
-      │    ├── fleet.<site1>               A        (endpoint phone-home)
-      │    ├── pxe.<site1>                 A
-      │    └── machines/<serial>.<site1>   A        (par poste, auto)
-      └── kanidm                            A        (commun à l'admin)
+<admin>.gouv.fr                                (admin existante)
+ └── securix.<admin>.gouv.fr                    (délégation dédiée)
+      ├── git.securix.<admin>.gouv.fr          (forge locale)
+      ├── cache.securix.<admin>.gouv.fr        (attic local)
+      ├── openbao.securix.<admin>.gouv.fr      (OpenBao local)
+      ├── fleet.securix.<admin>.gouv.fr        (endpoint phone-home)
+      ├── pxe.securix.<admin>.gouv.fr          (serveur PXE)
+      ├── kanidm.securix.<admin>.gouv.fr       (identité utilisateur)
+      └── machines/<serial>.securix.<admin>.gouv.fr
+                                                (un enregistrement
+                                                 par poste, créé par
+                                                 le pipeline)
 ```
 
 **Rôles du DNS** :
@@ -280,10 +274,10 @@ enregistrements des postes. Les enregistrements par poste :
 
 | Type | Nom | Contenu | Rôle |
 |---|---|---|---|
-| A / AAAA | `<serial>.<site>...` | IP du poste | Résolution directe, SAN du certificat machine |
-| PTR | `<ip-reverse>.in-addr.arpa` | `<serial>.<site>...` | Cohérence DNS inverse |
-| TXT | `<serial>.<site>...` | `vendor=X;model=Y;tpm=2.0;admin=Z;edition=hardened;provisioned=...` | Métadonnées d'inventaire |
-| TLSA | `_443._tcp.<serial>.<site>...` | Fingerprint cert | Pin TLS via DANE (optionnel) |
+| A / AAAA | `<serial>.securix.<admin>.gouv.fr` | IP du poste | Résolution directe, SAN du certificat machine |
+| PTR | `<ip-reverse>.in-addr.arpa` | `<serial>.securix.<admin>.gouv.fr` | Cohérence DNS inverse |
+| TXT | `<serial>.securix.<admin>.gouv.fr` | `vendor=X;model=Y;tpm=2.0;admin=Z;edition=hardened;provisioned=...` | Métadonnées d'inventaire |
+| TLSA | `_443._tcp.<serial>.securix.<admin>.gouv.fr` | Fingerprint cert | Pin TLS via DANE (optionnel) |
 
 Sécurisation de l'API : clé API chargée depuis `agenix`,
 `webserver-allow-from` restreint au runner CI, API exposée
@@ -296,15 +290,16 @@ mise à jour sur changement d'IP ou de métadonnées, passage en
 quarantaine sur échec d'attestation, suppression au recyclage du
 poste.
 
-Réplication DNS inter-sites : master central pour la racine
-`securix.<admin>.gouv.fr` avec slaves par site ; master local pour
-chaque sous-zone `<site>.securix.<admin>.gouv.fr`. AXFR sécurisé par
-TSIG. DNSSEC obligatoire.
+DNSSEC obligatoire pour la zone `securix.<admin>.gouv.fr`, signée
+par une clé contrôlée par l'administration. Les transferts AXFR
+éventuels (par exemple vers un secondaire de recouvrement) sont
+protégés par TSIG.
 
 ### 4.5 Enrôlement centralisé Secure Boot
 
 L'enrôlement et la gestion des clés Secure Boot (PK, KEK, db) sont
-centralisés côté administration, jamais déportés sur les postes.
+centralisés au niveau de l'administration, jamais déportés sur les
+postes eux-mêmes.
 
 ```
 ┌─ Coffre hors ligne (double contrôle) ─────────┐
@@ -313,7 +308,7 @@ centralisés côté administration, jamais déportés sur les postes.
 └────────────────────────────────────────────────┘
 
 ┌─ Service de signature Secure Boot ─────────────┐
-│ (admin centrale, adossé à HSM et OpenBao)      │
+│ (local, adossé à HSM et OpenBao)               │
 │ • Clés privées KEK et db dans HSM              │
 │ • API via OpenBao :                            │
 │   - sign-uki : signe une UKI donnée            │
@@ -323,16 +318,16 @@ centralisés côté administration, jamais déportés sur les postes.
 │ • Double contrôle sur PK et KEK                │
 │ • Journaux d'audit centralisés                 │
 └──────────────────────┬─────────────────────────┘
-                       │ réplication signée
+                       │ publication des .auth
                        ▼
-┌─ Site (cache local) ───────────────────────────┐
+┌─ Cache local ──────────────────────────────────┐
 │ • PK.auth, KEK.auth, db.auth (prêts à          │
 │   l'enrôlement)                                │
 │ • dbx.auth (liste de révocation courante)      │
 └────────────────────────────────────────────────┘
 
 ┌─ Poste (provisionnement) ──────────────────────┐
-│ • Télécharge les *.auth depuis le site         │
+│ • Télécharge les *.auth depuis le cache local  │
 │ • sbctl enroll-keys / efi-updatevar            │
 │ • Aucune clé privée ne transite                │
 │ • Signature UKI : toujours demandée au service │
@@ -349,20 +344,20 @@ par double contrôle humain.
 
 | # | Phase | Action | Outils |
 |---|---|---|---|
-| 1 | Amorçage réseau | Démarrage PXE UEFI, récupération de l'image installeur NixOS signée depuis le serveur PXE local du site. | iPXE signée, image issue du flake admin |
+| 1 | Amorçage réseau | Démarrage PXE UEFI, récupération de l'image installeur NixOS signée depuis le serveur PXE local. | iPXE signée, image issue du flake admin |
 | 2 | Authentification du poste | Liste d'accès par adresse MAC pré-enregistrée dans l'inventaire matériel. Validation optionnelle du certificat d'endorsement TPM (EK cert) contre la PKI des fabricants. OpenBao n'intervient pas à ce stade. | ACL PXE |
 | 3 | Génération d'identité locale | L'installeur génère une paire `age` unique pour ce poste, clé privée stockée localement. | `age-keygen` wrappé |
-| 4 | Annonce phone-home initiale | POST authentifié (mTLS + signature `age` + quote TPM optionnelle) vers `fleet.<site>.securix.<admin>.gouv.fr`. Payload : `serial`, `machine-id`, DMI (vendor, model, BIOS), CPU, RAM, disques, MAC, version TPM, statut Secure Boot, clé publique `age`, clé SSH publique éphémère. | phone-home étendu |
-| 5 | Attribution IP et inscription DNS | Attribution d'une IP via le serveur DHCP du site. Création via l'API PowerDNS des enregistrements A/AAAA, PTR, TXT dans la zone `<site>.securix.<admin>.gouv.fr`. Signature DNSSEC. | API PowerDNS + DNSSEC |
-| 6 | Émission du certificat machine | API OpenBao PKI : émission d'un certificat TLS avec SAN = `<serial>.<site>.securix.<admin>.gouv.fr`, durée courte. | OpenBao PKI |
+| 4 | Annonce phone-home initiale | POST authentifié (mTLS + signature `age` + quote TPM optionnelle) vers `fleet.securix.<admin>.gouv.fr`. Payload : `serial`, `machine-id`, DMI (vendor, model, BIOS), CPU, RAM, disques, MAC, version TPM, statut Secure Boot, clé publique `age`, clé SSH publique éphémère. | phone-home étendu |
+| 5 | Attribution IP et inscription DNS | Attribution d'une IP via le serveur DHCP local. Création via l'API PowerDNS des enregistrements A/AAAA, PTR, TXT dans la zone `securix.<admin>.gouv.fr`. Signature DNSSEC. | API PowerDNS + DNSSEC |
+| 6 | Émission du certificat machine | API OpenBao PKI : émission d'un certificat TLS avec SAN = `<serial>.securix.<admin>.gouv.fr`, durée courte. | OpenBao PKI |
 | 7 | Génération de la configuration Nix | Runner CI : commits dans le flake admin de `inventory/<serial>.yaml` et `machines/<serial>.nix` (plan `disko` adapté, profil matériel importé, options `securix.*` dérivées). Auto-merge liste blanche ou revue humaine. | Runner + templates |
-| 8 | Enrôlement Secure Boot (centralisé) | L'installeur récupère les fichiers `PK.auth`, `KEK.auth`, `db.auth` depuis le cache local du site (distribués par le service de signature centralisé). Application via `sbctl enroll-keys`. Retrait des clés Microsoft selon politique. Aucune clé privée ne transite. | `sbctl`, `efi-updatevar` |
+| 8 | Enrôlement Secure Boot (centralisé) | L'installeur récupère les fichiers `PK.auth`, `KEK.auth`, `db.auth` depuis le cache local (distribués par le service de signature centralisé). Application via `sbctl enroll-keys`. Retrait des clés Microsoft selon politique. Aucune clé privée ne transite. | `sbctl`, `efi-updatevar` |
 | 9 | Partitionnement | Application du plan déclaratif dérivé du hardware : ESP FAT32 + conteneur LUKS2 + BTRFS/LVM. | `disko` |
 | 10 | Chiffrement disque (FIDO2 + clé de recouvrement) | Création LUKS2 avec volume key aléatoire. Enrôlement de la Yubikey principale : `systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes`. Enrôlement de la Yubikey de secours. Génération d'une clé de recouvrement (≥32 caractères aléatoires), enrôlement en keyslot passphrase. Chiffrement `age` de cette clé pour l'autorité de recouvrement, archivage dans OpenBao. Effacement sécurisé de la copie temporaire. | `systemd-cryptenroll`, `age` |
-| 11 | Installation système | Installation de NixOS depuis le flake admin et le cache binaire local du site. Les secrets `age` destinés au poste sont déchiffrés à l'activation. | `clan machines install` (ou `nixos-anywhere`), `agenix` |
+| 11 | Installation système | Installation de NixOS depuis le flake admin et le cache binaire local. Les secrets `age` destinés au poste sont déchiffrés à l'activation. | `clan machines install` (ou `nixos-anywhere`), `agenix` |
 | 12 | Génération UKI signée | Demande de signature au service centralisé via OpenBao, qui vérifie le certificat machine et la quote TPM avant de signer. | `lanzaboote`, service centralisé |
 | 13 | Premier démarrage | Secure Boot vérifie l'UKI. L'utilisateur insère et valide sa Yubikey principale pour déchiffrer LUKS. Le système démarre. | `systemd-cryptsetup` + FIDO2 |
-| 14 | Attestation initiale et passage en MCO | Service `first-boot-attestation` : envoi à OpenBao d'un état initial (quote TPM PCR 0/2/4/7, hash closure, hash UKI). Activation de `comin` pour le pull continu depuis `git.<site>.securix.<admin>.gouv.fr`. Heartbeat phone-home persistant. Enrôlement utilisateur Kanidm (Yubikey déjà présentes, référencement central). | Client OpenBao, `comin`, Kanidm |
+| 14 | Attestation initiale et passage en MCO | Service `first-boot-attestation` : envoi à OpenBao d'un état initial (quote TPM PCR 0/2/4/7, hash closure, hash UKI). Activation de `comin` pour le pull continu depuis `git.securix.<admin>.gouv.fr`. Heartbeat phone-home persistant. Enrôlement utilisateur Kanidm (Yubikey déjà présentes, référencement central). | Client OpenBao, `comin`, Kanidm |
 
 ### 4.7 Défenses structurelles
 
@@ -446,7 +441,7 @@ Trois principes transverses :
 └───────────────────┬───────────────────────────────┘
                     │ mTLS + signature age
                     ▼
-┌─ Runner CI du site ───────────────────────────────┐
+┌─ Runner CI local ─────────────────────────────────┐
 │ 1. Authentification (cert + signature)             │
 │ 2. Attribution IP                                  │
 │ 3. API PowerDNS : enregistrements A/PTR/TXT        │
@@ -481,7 +476,7 @@ Ont été écartés pour ce contexte :
 
 - NixOps, morph : en déclin ou moins maintenus
 - Colmena, deploy-rs : push SSH uniquement, mal adaptés aux postes
-  nomades et aux sites déconnectés
+  nomades et aux environnements déconnectés
 - KubeNix, KuberNix, Nixlets : Kubernetes, hors scope
 - Nixery : registry de conteneurs, hors scope
 - terraform-nixos, terranix : infra cloud, mauvaise granularité
@@ -575,7 +570,7 @@ Une option Sécurix pourrait synthétiser ces choix :
 ```nix
 services.securix.identity = {
   backend = "kanidm";
-  server = "kanidm.<admin>.gouv.fr";
+  server = "kanidm.securix.<admin>.gouv.fr";
   enrollment.requireTwoFidoKeys = true;
   passwordFallback = {
     enable = true;
@@ -588,18 +583,20 @@ services.securix.identity = {
 
 - **Matrice matériel supporté** : la compatibilité FIDO2 en initrd
   et l'accès UEFI nécessaire à l'enrôlement Secure Boot varient
-  selon les constructeurs. Une matrice maintenue collectivement
-  serait précieuse.
-- **Promotion de modules entre administrations** : comment
-  promouvoir un module L2 développé par une administration vers le
-  noyau L0 s'il est utile à d'autres ? Processus de revue, critères
-  d'acceptation à définir.
-- **Rotation coordonnée Secure Boot** : si plusieurs administrations
-  partagent du matériel, la rotation doit être coordonnée.
+  selon les constructeurs. Une matrice maintenue serait précieuse.
+- **Promotion de modules** : comment faire remonter un module L2
+  utile vers le noyau L0 (cloud-gouv/securix) ? Processus de revue
+  et critères d'acceptation à définir.
 - **Attestation et conformité RGPD** : l'attestation continue
-  produit des journaux côté OpenBao. Conformité à examiner.
-- **Air-gap total** : bootstrap sans aucun amont (tout local),
-  procédure d'export physique à documenter.
+  produit des journaux côté OpenBao. Nature des données, durée de
+  conservation et finalité à examiner.
+- **Air-gap total sans amont** : procédure d'export physique
+  initial (bundle git, archive de closures signée) à documenter
+  pour un démarrage entièrement autonome.
+- **Extension ultérieure à plusieurs sites** : si l'architecture
+  évolue vers du multi-sites, la réplication DNS (master + slaves),
+  la fédération OpenBao et la coordination Secure Boot seront à
+  spécifier. Hors périmètre de la présente proposition.
 
 ## 8. Références
 
