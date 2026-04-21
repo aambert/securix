@@ -96,7 +96,9 @@ déchiffrement automatique à détourner.
 | Déchiffrement disque | `systemd-cryptenroll` + FIDO2 | Poste (L2) |
 | Clé de recouvrement LUKS | Passphrase longue, chiffrée `age` | Archive OpenBao |
 | Microségmentation réseau | `nixos-microsegebpf` | Poste (L2) |
-| Journalisation | Vector (log-shipper) | Poste (L2) |
+| Agent de collecte (logs + métriques) | Vector | Poste (L2) |
+| Stockage métriques et journaux | VictoriaMetrics + VictoriaLogs | Serveur local |
+| Visualisation et tableaux de bord | Grafana | Serveur local |
 | Secrets statiques versionnés | `age` / `sops-nix` | Flake admin |
 | Secrets dynamiques, PKI, révocation | OpenBao | Serveur local |
 | Identité utilisateur et FIDO2 | Kanidm | Serveur local |
@@ -155,6 +157,34 @@ Chaque couche est une contribution distincte, versionnable et
 substituable. Un satellite L2 peut être adopté par une administration
 et refusé par une autre. Le noyau L0 reste le socle partagé.
 
+### Alignement avec l'implémentation de référence cloud-gouv
+
+Le dépôt [`cloud-gouv/securix-infra-reference-implementation`](https://github.com/cloud-gouv/securix-infra-reference-implementation)
+publie une implémentation de référence de l'infrastructure serveur
+(machines `vault01`, `git01`, `cache01`, `obs01`, `vpn01`), déployée
+sur OpenStack ou Outscale via Terraform. Cette présente proposition
+se positionne en complément, pour un cas d'usage **monosite et
+offline** différent de la cible cloud de la référence.
+
+| Composant | Référence cloud-gouv | Proposition monosite offline | Statut |
+|---|---|---|---|
+| Coffre secrets | Vault | OpenBao (compatible API) | Aligné |
+| Forge git | Forgejo | Forgejo | Aligné |
+| Cache binaire | Harmonia | Harmonia (ou `attic`) | Aligné |
+| Observabilité | VictoriaMetrics + VictoriaLogs + Grafana | VictoriaMetrics + VictoriaLogs + Grafana | Aligné |
+| Secrets chiffrés au repos | `age` | `age` | Aligné |
+| SSO | Keycloak | Kanidm (proposition 1), Keycloak (proposition 2) | Divergent par défaut, Keycloak cité |
+| VPN | Netbird | Netbird (option) ou WireGuard + rosenpass pour PQC | Aligné avec Netbird comme option |
+| DNS | OVH cloud via Terraform | PowerDNS self-hosted | **Divergent** (contrainte offline) |
+| Compute | VMs cloud (OpenStack / Outscale) | Matériel physique onprem | **Divergent** (contrainte onprem) |
+| Déploiement | Terraform + push SSH (`deploy.sh`) | `comin` pull + Clan bootstrap | **Divergent** (postes nomades) |
+
+Les divergences structurelles (DNS, compute, déploiement) découlent
+du contexte monosite offline et ne remettent pas en cause la
+compatibilité fonctionnelle : un poste provisionné selon cette
+proposition peut parfaitement consommer une infrastructure serveur
+inspirée de la référence.
+
 ## 4. Déploiement et sécurisation au démarrage
 
 ### 4.1 Chaîne de confiance cible
@@ -196,6 +226,8 @@ PKCS#11, mais il ne conditionne plus le montage du disque.
 │  • Endpoint phone-home                                        │
 │  • Kanidm (identité utilisateur + FIDO2)                      │
 │  • Service de signature Secure Boot (HSM + OpenBao)           │
+│  • VictoriaMetrics + VictoriaLogs (stockage observabilité)    │
+│  • Grafana (visualisation et tableaux de bord)                │
 │                                                                │
 │ Clés hors ligne (coffre physique, double contrôle) :           │
 │  • Clé privée Secure Boot PK (racine)                         │
@@ -282,8 +314,7 @@ enregistrements des postes. Les enregistrements par poste :
 Sécurisation de l'API : clé API chargée depuis `agenix`,
 `webserver-allow-from` restreint au runner CI, API exposée
 uniquement sur le segment d'administration, journalisation des
-appels via le log-shipper vers OpenSearch, rate limiting côté
-pipeline.
+appels via Vector vers VictoriaLogs, rate limiting côté pipeline.
 
 Cycle de vie d'un enregistrement : création au provisionnement,
 mise à jour sur changement d'IP ou de métadonnées, passage en
@@ -498,19 +529,32 @@ Cache binaire : `attic` (fédéré, moderne) est un choix naturel ;
 `harmonia` est une alternative minimaliste. Le doc reste neutre sur
 ce choix, chaque administration peut décider selon ses préférences.
 
-### 5.5 Attestation continue
+### 5.5 Observabilité et attestation continue
 
-Chaque poste publie périodiquement à OpenBao :
+Deux flux distincts convergent vers l'infrastructure locale
+d'observabilité :
 
-- Une quote TPM signée (PCR 0/2/4/7)
-- Le hash de la closure système active
-- Le hash de l'UKI en cours
-- Un compteur anti-rejeu
+- **Journaux et métriques** : chaque poste exécute un agent Vector
+  qui collecte les journaux `journald`, les métriques système
+  (CPU, mémoire, disque, réseau) et les métriques applicatives.
+  Vector les pousse vers VictoriaLogs (journaux) et VictoriaMetrics
+  (métriques). Grafana fournit les tableaux de bord et les
+  alertes.
+- **Attestation** : chaque poste publie périodiquement à OpenBao
+  une quote TPM signée (PCR 0/2/4/7), le hash de la closure
+  système active, le hash de l'UKI en cours et un compteur
+  anti-rejeu.
 
 OpenBao compare aux valeurs attendues signées pour chaque poste.
-Toute divergence déclenche une alerte et peut, selon la politique
-de l'administration, révoquer l'accès du poste aux secrets
-applicatifs ou l'enregistrement DNS (mise en quarantaine).
+Toute divergence déclenche une alerte (remontée via Grafana vers
+les équipes exploitation) et peut, selon la politique de
+l'administration, révoquer l'accès du poste aux secrets
+applicatifs ou son enregistrement DNS (mise en quarantaine).
+
+Cette séparation (Vector → VictoriaMetrics/VictoriaLogs pour
+l'opérationnel, phone-home + OpenBao pour l'attestation
+cryptographique) évite de confier les preuves d'intégrité à une
+base dédiée à la supervision, et inversement.
 
 ## 6. Authentification utilisateur et gestion des identités
 
@@ -613,6 +657,10 @@ services.securix.identity = {
 - kanidm/kanidm, <https://github.com/kanidm/kanidm>.
 - clan.lol, <https://clan.lol>.
 - nlewo/comin, <https://github.com/nlewo/comin>.
+- nix-community/harmonia, <https://github.com/nix-community/harmonia>.
 - zhaofengli/attic, <https://github.com/zhaofengli/attic>.
+- VictoriaMetrics, <https://victoriametrics.com/>.
+- VictoriaLogs, <https://docs.victoriametrics.com/victorialogs/>.
 - PowerDNS Authoritative, <https://doc.powerdns.com/authoritative/>.
+- cloud-gouv/securix-infra-reference-implementation, <https://github.com/cloud-gouv/securix-infra-reference-implementation>.
 - Lennart Poettering, « Brave New Trusted Boot World » (octobre 2022).
