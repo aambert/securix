@@ -2,8 +2,9 @@
 
 Ce document est une proposition, ouverte à discussion, sur l'architecture
 cible d'un poste de travail Sécurix et de l'écosystème NixOS qui
-l'entoure, dans un contexte de déploiement multi-administrations gérées
-de manière uniforme.
+l'entoure, dans un contexte de déploiement **multi-administrations
+gérées de manière uniforme** et **installations offline** appuyées sur
+des miroirs locaux par site.
 
 Il ne prétend pas prescrire : chaque proposition est défendable
 isolément et peut être adoptée, adaptée ou rejetée. Le contexte
@@ -16,19 +17,22 @@ données et ses clés.
 ## 1. Principes directeurs
 
 - **Souveraineté par administration** : chaque administration héberge
-  et contrôle ses clés, secrets et journaux d'attestation. Aucun
-  opérateur central n'est obligatoire.
+  et contrôle ses clés, secrets et journaux. Aucun opérateur central
+  n'est obligatoire.
 - **Uniformité de gestion** : mêmes outils, mêmes procédures, mêmes
   baselines entre administrations. La divergence se fait par overlay
   déclaratif, pas par fork du noyau.
 - **Composer plutôt que réinventer** : l'écosystème s'appuie sur des
-  briques existantes auditables (lanzaboote, OpenBao, age, Kanidm…),
-  pas sur un monolithe propriétaire.
+  briques existantes auditables (lanzaboote, OpenBao, age, Kanidm,
+  Clan, comin, PowerDNS, attic), pas sur un monolithe propriétaire.
 - **Activation explicite (opt-in)** pour tout changement disruptif.
 - **Assertions avec message clair** plutôt que `mkForce` silencieux,
   en pointant vers `security.anssi.excludes` ou équivalent.
 - **Registre de flakes indépendants** : chaque satellite est un flake
-  distinct, versionné et signé. Pas de mono-dépôt.
+  distinct, versionné et signé.
+- **Installations offline** : un site peut provisionner et exploiter
+  ses postes sans connectivité externe, grâce à des miroirs locaux
+  répliqués depuis un amont éventuel.
 
 ## 2. Modèle de menace retenu
 
@@ -45,22 +49,21 @@ données et ses clés.
 ### Scénarios hors périmètre
 
 - Attaque matérielle sophistiquée (implant TPM, sonde JTAG,
-  décapsulation de composants) : hors du budget défensif
-  raisonnable d'un poste de travail.
+  décapsulation) : hors du budget défensif raisonnable.
 - Cold boot attack sur la mémoire vive sans protections BIOS
-  spécifiques : à traiter par module dédié si la flotte matérielle
-  le permet.
+  spécifiques : à traiter par module dédié si la flotte le permet.
 - Attaquant disposant d'une présence hardware persistante.
+- Vol simultané du poste **et** des deux Yubikey FIDO2 de
+  l'utilisateur **et** de la clé de recouvrement administrateur : le
+  compromis triple n'est pas couvert par la cryptographie.
 
 ### Justification du cadrage
 
-L'attaque décrite par oddlama (contournement LUKS/TPM2 par confusion
-de système de fichiers, 2025) est un scénario d'accès physique bref
-aujourd'hui réaliste et documenté. Sans contre-mesure explicite, un
-poste auto-déverrouillé par TPM est exposé. Le cadrage ci-dessus
-impose une défense qui rend cet accès infructueux, tout en
-reconnaissant les limites intrinsèques face à un attaquant étatique
-persistant disposant d'accès matériel long.
+Le choix de déchiffrer LUKS par **FIDO2** plutôt que par TPM
+auto-unlock neutralise structurellement la classe d'attaques de
+contournement TPM (incluant celle décrite par oddlama en 2025) :
+sans présence physique d'une Yubikey enrôlée, il n'existe aucun
+déchiffrement automatique à détourner.
 
 ## 3. Architecture en quatre couches
 
@@ -68,20 +71,84 @@ persistant disposant d'accès matériel long.
 ┌─────────────────────────────────────────────────────────┐
 │ L3  Gestion de la flotte                                 │
 │  Cache binaire admin, PKI, secrets dynamiques,           │
-│  attestation continue, télémétrie d'intégrité            │
+│  attestation continue, pipeline auto-config, PowerDNS    │
 ├─────────────────────────────────────────────────────────┤
 │ L2  Satellites (flakes indépendants)                     │
-│  securix-sat-bootchain, securix-sat-microseg,            │
-│  securix-sat-logshipper, securix-sat-openbao-bridge,     │
-│  securix-sat-fido2-fleet, etc.                           │
+│  securix-sat-microseg, securix-sat-logshipper,           │
+│  securix-sat-openbao-bridge, securix-sat-fido2-fleet…    │
 ├─────────────────────────────────────────────────────────┤
 │ L1  Profil d'administration (overlays sur L0)            │
-│  securix-admin-MinistereX, politiques spécifiques,       │
-│  niveau de sensibilité, matrice matériel supporté        │
+│  securix-admin-<MinistereX>, politiques, niveau de       │
+│  sensibilité, matrice matériel supporté                  │
 ├─────────────────────────────────────────────────────────┤
 │ L0  Noyau Sécurix (cloud-gouv/securix)                   │
 │  Baseline ANSSI commune, modules de durcissement, tests  │
 └─────────────────────────────────────────────────────────┘
+```
+
+### Tableau synthétique des briques
+
+| Rôle | Composant | Emplacement |
+|---|---|---|
+| Baseline ANSSI | Sécurix (noyau) | Flake admin (L0) |
+| Profil d'administration | Overlays par admin | Flake admin (L1) |
+| Chaîne de boot signée | `lanzaboote` | Poste (L2) |
+| Déchiffrement disque | `systemd-cryptenroll` + FIDO2 | Poste (L2) |
+| Clé de recouvrement LUKS | Passphrase longue, chiffrée `age` | Archive OpenBao |
+| Microségmentation réseau | `nixos-microsegebpf` | Poste (L2) |
+| Journalisation | Vector (log-shipper) | Poste (L2) |
+| Secrets statiques versionnés | `age` / `sops-nix` | Flake admin |
+| Secrets dynamiques, PKI, révocation | OpenBao | Serveur local par site |
+| Identité utilisateur et FIDO2 | Kanidm | Serveur local par admin |
+| Installation initiale et services | Clan | Orchestrateur local |
+| MCO en pull continu | `comin` | Poste |
+| Annonce et heartbeat | phone-home | Poste ↔ Runner |
+| Inventaire DNS et API | PowerDNS | Serveur local par site |
+| Sources git | Forgejo local | Serveur local par site |
+| Cache binaire Nix | `attic` | Serveur local par site |
+| Runner de pipeline | Forgejo Actions ou équivalent | Serveur local par site |
+| Signature Secure Boot | Service centralisé HSM + OpenBao | Administration centrale |
+| Attestation TPM continue | Quote PCR 0/2/4/7 + hash closure | Poste → OpenBao |
+
+### Schéma d'ensemble
+
+```mermaid
+flowchart LR
+    subgraph Amont
+        FA[Forge souveraine]
+    end
+
+    subgraph Site
+        G[Git local]
+        C[Cache Nix]
+        B[OpenBao]
+        D[PowerDNS]
+        R[Runner CI]
+        X[PXE installeur]
+    end
+
+    subgraph Poste
+        U[UKI signee]
+        F[LUKS + FIDO2]
+        PH[phone-home]
+        CM[comin]
+        Y[Yubikey user]
+    end
+
+    FA -.-> G
+    FA -.-> C
+    X --> U
+    U --> F
+    Y --> F
+    F --> PH
+    F --> CM
+    PH -->|annonce| R
+    R -->|API DNS| D
+    R -->|API PKI| B
+    R -->|commit| G
+    CM -->|pull flake| G
+    CM -->|pull closures| C
+    CM -->|cert| B
 ```
 
 Chaque couche est une contribution distincte, versionnable et
@@ -93,22 +160,20 @@ et refusé par une autre. Le noyau L0 reste le socle partagé.
 ### 4.1 Chaîne de confiance cible
 
 ```
-UEFI (Secure Boot, clés admin enrôlées)
- → lanzaboote stub (UKI signée par clé admin)
+UEFI (Secure Boot, clés admin enrôlées centralement)
+ → lanzaboote stub (UKI signée par le service centralisé)
    → kernel (mesuré dans PCR 4)
      → initrd (hash intégré à l'UKI signée, non modifiable)
-       → déchiffrement LUKS
-          (policy TPM : PCR 0+2+4+7+15 + PIN utilisateur)
-         → vérification applicative PCR 15 (ensure-pcr)
-           → système cible monté
+       → déchiffrement LUKS (Yubikey FIDO2 obligatoire)
+         → système cible monté
 ```
 
-Deux barrières cryptographiques indépendantes protègent contre
-l'attaque oddlama : la policy TPM refuse le déscellement si PCR 15
-diverge, et le module `ensure-pcr` arrête le démarrage avec un
-message explicite avant même la tentative de déscellement.
+Le TPM2 reste présent **indépendamment** du déchiffrement LUKS. Il
+fournit l'attestation continue (quote PCR 0/2/4/7, hash de la closure
+active, hash de l'UKI en cours) et peut stocker des clés applicatives
+PKCS#11, mais il ne conditionne plus le montage du disque.
 
-### 4.2 Infrastructure centralisée par administration
+### 4.2 Infrastructure par site
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -117,18 +182,27 @@ message explicite avant même la tentative de déscellement.
 │ Artefacts statiques (git, versionnés) :                        │
 │  • Flake admin (profil Sécurix + overlays + secrets chiffrés  │
 │    age pour les destinataires autorisés)                      │
-│  • Cache binaire Nix signé par clé admin                      │
+│  • Cache binaire Nix signé par clé admin (attic)              │
 │  • Image installeur NixOS signée                              │
 │                                                                │
-│ Serveurs actifs :                                              │
-│  • Serveur PXE/iPXE (diffuse l'image installeur)              │
-│  • OpenBao (PKI admin, secrets dynamiques, audit)             │
-│  • Serveur de signature UKI (HSM, sollicité via OpenBao)      │
+│ Serveurs actifs locaux :                                       │
+│  • Serveur PXE/iPXE                                           │
+│  • Forgejo local (miroir des sources)                         │
+│  • attic local (cache binaire)                                │
+│  • OpenBao local (PKI, secrets dynamiques, audit)             │
+│  • PowerDNS local (zones déléguées + API inventaire)          │
+│  • Runner de pipeline (Forgejo Actions ou équivalent)         │
+│  • Endpoint phone-home                                        │
+│                                                                │
+│ Services mutualisés par administration :                       │
+│  • Kanidm (identité utilisateur + FIDO2)                      │
+│  • Service de signature Secure Boot centralisé (HSM +         │
+│    OpenBao), adressé depuis les sites                         │
 │                                                                │
 │ Clés hors ligne (coffre physique, double contrôle) :           │
 │  • Clé privée Secure Boot PK (racine)                         │
-│  • Clé privée age "admin-bootstrap"                           │
-│  • Sauvegardes Secure Boot KEK/db                             │
+│  • Sauvegardes Secure Boot KEK et db                          │
+│  • Autorité de recouvrement LUKS                              │
 └──────────────────────────┬───────────────────────────────────┘
                            │ VLAN de provisionnement isolé
                            ▼
@@ -138,232 +212,394 @@ message explicite avant même la tentative de déscellement.
                 └──────────────────────────┘
 ```
 
-### 4.3 Déroulé de déploiement en 14 étapes
+### 4.3 Déploiement offline multi-sites
+
+Trois topologies de réplication sont envisageables selon la taille
+et la maturité de l'administration.
+
+1. **Hub-and-spoke** : un amont souverain (forge d'administration
+   centrale ou forge interministérielle) vers tous les sites.
+   Cadence contrôlée centralement, gouvernance simple. Recommandée
+   par défaut.
+2. **Cascade** : administration centrale → site principal d'une
+   administration → sites périphériques. Utile pour les
+   administrations territoriales.
+3. **Autonomie totale** : site sans amont, flake local, PKI propre.
+   Bootstrap par export physique initial.
+
+Réplication des artefacts :
+
+| Artefact | Mécanisme | Fréquence typique | Vérification |
+|---|---|---|---|
+| Sources git | Mirroir Forgejo / `git clone --mirror` | Quotidien ou sur événement | Signature des commits |
+| Cache binaire Nix | `attic push` / `attic pull` | Hebdomadaire ou sur MAJ | Signature des closures |
+| Images installeur | `nix copy` vers cache local | Sur MAJ | Signature amont |
+| Listes de révocation (certs, FIDO2, Secure Boot `dbx`) | Pull HTTP + signature `age` | Horaire à quotidien | Signature `age` |
+| Sauvegardes OpenBao admin | Non répliqué côté site | — | Souveraineté |
+
+Bootstrap d'un nouveau site : trois cas distincts (site avec accès
+internet initial, site air-gap dès le départ par export physique,
+site autonome sans amont). Dans tous les cas, l'amorçage est
+reproductible et documenté.
+
+Risque amont compromis : la signature obligatoire des artefacts, la
+vérification systématique en réception, un délai de coexistence
+avant ingestion en production et un canal de révocation hors bande
+sont les contre-mesures minimales.
+
+### 4.4 PowerDNS et inventaire DNS
+
+Chaque site exploite une instance PowerDNS locale, configurée de
+manière déclarative via le module NixOS `services.powerdns`. La
+hiérarchie de zones proposée :
+
+```
+<admin>.gouv.fr                                    (admin existante)
+ └── securix.<admin>.gouv.fr                        (délégation dédiée)
+      ├── <site1>                                   (sous-zone par site)
+      │    ├── git.<site1>                 A        (forge locale)
+      │    ├── cache.<site1>               A        (attic local)
+      │    ├── openbao.<site1>             A        (OpenBao local)
+      │    ├── fleet.<site1>               A        (endpoint phone-home)
+      │    ├── pxe.<site1>                 A
+      │    └── machines/<serial>.<site1>   A        (par poste, auto)
+      └── kanidm                            A        (commun à l'admin)
+```
+
+**Rôles du DNS** :
+
+- Discovery des services pour Clan, comin, phone-home, OpenBao
+- Source de SAN pour les certificats TLS émis par OpenBao PKI
+- Identité des postes (A/AAAA + PTR) cohérente avec les certificats
+- Inventaire consultable via enregistrements TXT signés DNSSEC
+- Split-horizon : la vue interne n'est pas exposée publiquement
+
+**API d'enregistrement pour l'inventaire** : le pipeline utilise
+l'API PowerDNS pour créer, mettre à jour ou supprimer les
+enregistrements des postes. Les enregistrements par poste :
+
+| Type | Nom | Contenu | Rôle |
+|---|---|---|---|
+| A / AAAA | `<serial>.<site>...` | IP du poste | Résolution directe, SAN du certificat machine |
+| PTR | `<ip-reverse>.in-addr.arpa` | `<serial>.<site>...` | Cohérence DNS inverse |
+| TXT | `<serial>.<site>...` | `vendor=X;model=Y;tpm=2.0;admin=Z;edition=hardened;provisioned=...` | Métadonnées d'inventaire |
+| TLSA | `_443._tcp.<serial>.<site>...` | Fingerprint cert | Pin TLS via DANE (optionnel) |
+
+Sécurisation de l'API : clé API chargée depuis `agenix`,
+`webserver-allow-from` restreint au runner CI, API exposée
+uniquement sur le segment d'administration, journalisation des
+appels via le log-shipper vers OpenSearch, rate limiting côté
+pipeline.
+
+Cycle de vie d'un enregistrement : création au provisionnement,
+mise à jour sur changement d'IP ou de métadonnées, passage en
+quarantaine sur échec d'attestation, suppression au recyclage du
+poste.
+
+Réplication DNS inter-sites : master central pour la racine
+`securix.<admin>.gouv.fr` avec slaves par site ; master local pour
+chaque sous-zone `<site>.securix.<admin>.gouv.fr`. AXFR sécurisé par
+TSIG. DNSSEC obligatoire.
+
+### 4.5 Enrôlement centralisé Secure Boot
+
+L'enrôlement et la gestion des clés Secure Boot (PK, KEK, db) sont
+centralisés côté administration, jamais déportés sur les postes.
+
+```
+┌─ Coffre hors ligne (double contrôle) ─────────┐
+│ • Clé privée PK (racine Secure Boot)           │
+│ • Usage rarissime : bootstrap ou rotation      │
+└────────────────────────────────────────────────┘
+
+┌─ Service de signature Secure Boot ─────────────┐
+│ (admin centrale, adossé à HSM et OpenBao)      │
+│ • Clés privées KEK et db dans HSM              │
+│ • API via OpenBao :                            │
+│   - sign-uki : signe une UKI donnée            │
+│   - gen-auth-db / gen-auth-kek : produit des   │
+│     variables EFI signées pour enrôlement      │
+│   - revoke : signe une entrée dbx              │
+│ • Double contrôle sur PK et KEK                │
+│ • Journaux d'audit centralisés                 │
+└──────────────────────┬─────────────────────────┘
+                       │ réplication signée
+                       ▼
+┌─ Site (cache local) ───────────────────────────┐
+│ • PK.auth, KEK.auth, db.auth (prêts à          │
+│   l'enrôlement)                                │
+│ • dbx.auth (liste de révocation courante)      │
+└────────────────────────────────────────────────┘
+
+┌─ Poste (provisionnement) ──────────────────────┐
+│ • Télécharge les *.auth depuis le site         │
+│ • sbctl enroll-keys / efi-updatevar            │
+│ • Aucune clé privée ne transite                │
+│ • Signature UKI : toujours demandée au service │
+│   centralisé, jamais locale                    │
+└────────────────────────────────────────────────┘
+```
+
+Ce modèle garantit qu'une compromission d'un poste ne donne jamais
+accès au matériel de signature, que la rotation est pilotée en un
+seul point et que les opérations critiques (PK, KEK) sont couvertes
+par double contrôle humain.
+
+### 4.6 Déroulé de déploiement en 14 étapes
 
 | # | Phase | Action | Outils |
 |---|---|---|---|
-| 1 | Amorçage réseau | Le poste démarre en PXE UEFI et récupère l'image installeur NixOS signée depuis le serveur de déploiement. | `pixiecore`, iPXE signée |
-| 2 | Authentification | Le serveur PXE vérifie l'éligibilité (liste d'accès par adresse MAC + quote TPM initiale PCR 0/2/4/7). | ACL PXE + OpenBao |
-| 3 | Identité locale | L'installeur génère une paire `age` unique pour ce poste. La clé privée est scellée localement dans un keystore protégé TPM. | `age-keygen` wrappé |
-| 4 | Enregistrement | La clé publique `age` du poste est envoyée à OpenBao, signée par le certificat de l'installeur. | Client OpenBao embarqué |
-| 5 | Enrôlement Secure Boot | L'installeur déchiffre PK/KEK/db admin depuis le flake (chiffrés `age` pour la clé "admin-bootstrap") puis `sbctl enroll-keys`. Retrait des clés Microsoft si la politique l'exige. | `sbctl`, `agenix` |
-| 6 | Partitionnement | Application du plan déclaratif : ESP FAT32 + conteneur LUKS2 + BTRFS/LVM. | `disko` |
-| 7 | Chiffrement disque (scellement initial) | Création LUKS2 avec volume key aléatoire. Scellement TPM : `--tpm2-pcrs=0+2+4+7 --tpm2-with-pin=yes`. PCR 15 volontairement absent (pas encore prédictible). Option `tpm2-measure-pcr=yes` ajoutée dans `/etc/crypttab` pour mesurer la volume key au déchiffrement suivant. | `systemd-cryptenroll` |
-| 8 | Installation système | Installation de NixOS depuis le flake admin et le cache signé. Les secrets `age` destinés au poste sont déchiffrés à l'activation avec la clé locale. | `nixos-install`, `agenix` |
-| 9 | Génération UKI | Demande de signature au serveur de signature via OpenBao, qui vérifie l'identité du poste (certificat machine + quote TPM) avant de signer. | `lanzaboote`, client OpenBao |
-| 10 | Configuration initiale | `ensure-pcr.nix` activé avec `pcr15 = null`. `agenix` configuré avec l'identité locale. Service `first-boot-pcr-capture` armé. | Modules Nix |
-| 11 | Premier démarrage | Secure Boot vérifie l'UKI. TPM + PIN déchiffre LUKS. `tpm2-measure-pcr=yes` mesure la volume key dans PCR 15. `first-boot-pcr-capture` lit PCR 15, signe la valeur avec la clé `age` locale, envoie à OpenBao. | `systemd-analyze pcrs`, client OpenBao |
-| 12 | Enregistrement PCR | OpenBao vérifie la signature, enregistre PCR 15 attendu pour ce poste (indexé par `machine-id`), renvoie une valeur signée. | OpenBao PKI |
-| 13 | Activation finale et rescellement TPM | La valeur signée est écrite dans le flake local. `nixos-rebuild switch` applique `systemIdentity.pcr15`. Rescellement : `--tpm2-pcrs=0+2+4+7+15 --tpm2-with-pin=yes`. La policy TPM refuse désormais le déscellement si PCR 15 diverge. | `nixos-rebuild`, `systemd-cryptenroll` |
-| 14 | Enrôlement utilisateur | Première session : enrôlement de deux Yubikey FIDO2 (principale + sauvegarde), clés publiques enregistrées dans OpenBao. Le PIN TPM est renouvelé vers la valeur définitive choisie par l'utilisateur. | `pamu2fcfg`, hook OpenBao |
+| 1 | Amorçage réseau | Démarrage PXE UEFI, récupération de l'image installeur NixOS signée depuis le serveur PXE local du site. | iPXE signée, image issue du flake admin |
+| 2 | Authentification du poste | Liste d'accès par adresse MAC pré-enregistrée dans l'inventaire matériel. Validation optionnelle du certificat d'endorsement TPM (EK cert) contre la PKI des fabricants. OpenBao n'intervient pas à ce stade. | ACL PXE |
+| 3 | Génération d'identité locale | L'installeur génère une paire `age` unique pour ce poste, clé privée stockée localement. | `age-keygen` wrappé |
+| 4 | Annonce phone-home initiale | POST authentifié (mTLS + signature `age` + quote TPM optionnelle) vers `fleet.<site>.securix.<admin>.gouv.fr`. Payload : `serial`, `machine-id`, DMI (vendor, model, BIOS), CPU, RAM, disques, MAC, version TPM, statut Secure Boot, clé publique `age`, clé SSH publique éphémère. | phone-home étendu |
+| 5 | Attribution IP et inscription DNS | Attribution d'une IP via le serveur DHCP du site. Création via l'API PowerDNS des enregistrements A/AAAA, PTR, TXT dans la zone `<site>.securix.<admin>.gouv.fr`. Signature DNSSEC. | API PowerDNS + DNSSEC |
+| 6 | Émission du certificat machine | API OpenBao PKI : émission d'un certificat TLS avec SAN = `<serial>.<site>.securix.<admin>.gouv.fr`, durée courte. | OpenBao PKI |
+| 7 | Génération de la configuration Nix | Runner CI : commits dans le flake admin de `inventory/<serial>.yaml` et `machines/<serial>.nix` (plan `disko` adapté, profil matériel importé, options `securix.*` dérivées). Auto-merge liste blanche ou revue humaine. | Runner + templates |
+| 8 | Enrôlement Secure Boot (centralisé) | L'installeur récupère les fichiers `PK.auth`, `KEK.auth`, `db.auth` depuis le cache local du site (distribués par le service de signature centralisé). Application via `sbctl enroll-keys`. Retrait des clés Microsoft selon politique. Aucune clé privée ne transite. | `sbctl`, `efi-updatevar` |
+| 9 | Partitionnement | Application du plan déclaratif dérivé du hardware : ESP FAT32 + conteneur LUKS2 + BTRFS/LVM. | `disko` |
+| 10 | Chiffrement disque (FIDO2 + clé de recouvrement) | Création LUKS2 avec volume key aléatoire. Enrôlement de la Yubikey principale : `systemd-cryptenroll --fido2-device=auto --fido2-with-client-pin=yes`. Enrôlement de la Yubikey de secours. Génération d'une clé de recouvrement (≥32 caractères aléatoires), enrôlement en keyslot passphrase. Chiffrement `age` de cette clé pour l'autorité de recouvrement, archivage dans OpenBao. Effacement sécurisé de la copie temporaire. | `systemd-cryptenroll`, `age` |
+| 11 | Installation système | Installation de NixOS depuis le flake admin et le cache binaire local du site. Les secrets `age` destinés au poste sont déchiffrés à l'activation. | `clan machines install` (ou `nixos-anywhere`), `agenix` |
+| 12 | Génération UKI signée | Demande de signature au service centralisé via OpenBao, qui vérifie le certificat machine et la quote TPM avant de signer. | `lanzaboote`, service centralisé |
+| 13 | Premier démarrage | Secure Boot vérifie l'UKI. L'utilisateur insère et valide sa Yubikey principale pour déchiffrer LUKS. Le système démarre. | `systemd-cryptsetup` + FIDO2 |
+| 14 | Attestation initiale et passage en MCO | Service `first-boot-attestation` : envoi à OpenBao d'un état initial (quote TPM PCR 0/2/4/7, hash closure, hash UKI). Activation de `comin` pour le pull continu depuis `git.<site>.securix.<admin>.gouv.fr`. Heartbeat phone-home persistant. Enrôlement utilisateur Kanidm (Yubikey déjà présentes, référencement central). | Client OpenBao, `comin`, Kanidm |
 
-### 4.4 État cible après déploiement
+### 4.7 Défenses structurelles
 
-- Secure Boot activé avec clés admin ; clés Microsoft retirées selon
-  la politique.
-- Chaîne de démarrage entièrement signée : firmware → lanzaboote →
-  UKI (kernel + initrd).
-- LUKS déchiffré uniquement si le TPM valide PCR 0/2/4/7/15 **et**
-  si le PIN utilisateur est correct.
-- Vérification `ensure-pcr` active en défense en profondeur.
-- Identité `age` locale scellée dans le poste, identité publique
-  enregistrée dans OpenBao.
-- Deux Yubikey FIDO2 enrôlées.
-- Attestation continue disponible via OpenBao.
+Le modèle de déchiffrement par FIDO2 met hors de portée une classe
+entière d'attaques (bypass TPM2 auto-unlock, confusion de systèmes
+de fichiers décrite par oddlama) sans avoir à chaîner plusieurs
+barrières cryptographiques. Les défenses restantes :
 
-### 4.5 Défenses croisées contre l'attaque oddlama
-
-1. **Faux LUKS aux mêmes UUIDs** : volume key différente → PCR 15
-   différent → policy TPM refuse le déscellement.
-2. **Neutralisation de `ensure-pcr` dans l'initrd** : impossible,
-   l'initrd est intégré à l'UKI signée (lanzaboote).
-3. **Modification du kernel ou de l'initrd** : signature UKI invalide,
-   Secure Boot refuse.
-4. **Absence de PIN** : `--tpm2-with-pin=yes` impose la saisie
-   manuelle à chaque démarrage.
-5. **Boot hors machine avec matériel copié** : le TPM est lié au
-   poste, la volume key ne sort jamais du TPM.
+1. **UKI signée** par le service centralisé : toute modification de
+   l'initrd ou du kernel invalide la signature, Secure Boot refuse
+   le démarrage.
+2. **Présence physique obligatoire** : sans l'une des deux Yubikey
+   enrôlées, LUKS ne se déchiffre pas. La clé de recouvrement est
+   chiffrée `age` et archivée hors du poste.
+3. **Attestation continue par OpenBao** : toute divergence des PCR
+   déclenche une alerte et peut mener à la révocation du certificat
+   machine et des accès aux secrets.
+4. **Secure Boot sous contrôle admin** : les clés Microsoft peuvent
+   être retirées selon la politique, réduisant la surface
+   d'attaque.
 
 ## 5. Industrialisation et maintien en condition opérationnelle
 
 ### 5.1 Gestion hybride des secrets : age et OpenBao
 
-Les deux outils sont complémentaires, pas exclusifs.
+Les deux outils sont complémentaires.
 
 | Secret / donnée | age (statique, dans le flake) | OpenBao (dynamique, runtime) |
 |---|---|---|
 | Clés publiques Secure Boot | ✅ | — |
-| Clé privée Secure Boot PK (racine) | ❌ (hors ligne, coffre) | ❌ |
-| Clé privée signature UKI | — | ✅ |
+| Clé privée Secure Boot PK | ❌ (hors ligne, coffre) | ❌ |
+| Clés privées KEK et db | ❌ | HSM adossé à OpenBao |
 | Identité bootstrap (installeur) | ✅ | — |
 | Policies signées distribuées | ✅ | — |
 | Identité `age` locale du poste | Générée au provisionnement | — |
 | Certificat machine renouvelable | — | ✅ |
+| Clé de recouvrement LUKS | ✅ (chiffrée pour autorité) | ✅ (archivage) |
 | Jetons d'attestation | — | ✅ |
-| PCR 15 attendu (signé) | Distribué dans le flake | ✅ (signature côté serveur) |
-| Secrets applicatifs | — | ✅ |
+| Secrets applicatifs flotte | — | ✅ |
 | Credentials éphémères | — | ✅ |
-| Sauvegardes de clés | ✅ (hors ligne) | — |
+| Sauvegardes de clés critiques | ✅ (hors ligne) | — |
 
-**Chaîne d'amorçage** :
+Chaîne d'amorçage : l'image installeur contient la clé publique
+`age` « admin-bootstrap ». Le poste génère sa propre paire `age`
+locale au provisionnement. Sa clé publique est enregistrée dans
+OpenBao, authentifiée par le certificat de l'installeur. À partir
+de là, OpenBao gère le quotidien ; `age` couvre ce qui est
+versionné dans le flake.
 
-1. L'image installeur contient la clé publique `age` "admin-bootstrap".
-2. Au provisionnement, le poste génère sa propre paire `age` locale.
-3. La clé publique locale est enregistrée dans OpenBao (authentifiée
-   par le certificat de l'installeur).
-4. Le poste obtient un premier certificat machine d'OpenBao en
-   prouvant son quote TPM et sa signature `age` locale.
-5. À partir de là, OpenBao gère le quotidien ; `age` couvre ce qui
-   est versionné dans le flake.
-
-**Modules NixOS mobilisables** : `agenix` (simple), `sops-nix` (plus
-riche), module `openbao` déjà intégré à Sécurix.
+Modules NixOS mobilisables : `agenix`, `sops-nix`, module `openbao`
+déjà présent dans Sécurix.
 
 ### 5.2 Rotation des clés et cycle de vie
 
 | Type de clé/secret | Fréquence | Portée | Automatisable | Risque en cas d'échec |
 |---|---|---|---|---|
-| PIN TPM | 12 mois + obligatoire au premier accès | Poste | Minuteur + notification utilisateur | Immobilisation du poste |
-| Clé de volume LUKS | Annuelle ou sur incident | Poste (impact PCR 15) | Partiellement | Indisponibilité ~30 min |
-| Secure Boot (PK/KEK/db) | 5 à 10 ans ou sur incident | Flotte entière | Non (double contrôle obligatoire) | Immobilisation de la flotte |
-| Clé de signature UKI | Annuelle | Flotte | Oui (via le flake) | UKI invalide, démarrage impossible |
-| Certificat machine (PKI OpenBao) | Hebdomadaire à mensuelle | Poste | Oui (agent local) | Attestation expirée, mise en quarantaine |
-| Clé FIDO2 utilisateur | Événementielle (perte, départ) | Utilisateur | Partiellement | Perte d'accès utilisateur |
-| Jetons et secrets applicatifs | Horaire à hebdomadaire | Agent applicatif | Oui (courte durée + renouvellement auto) | Délai de tolérance dépassé, blocage |
+| PIN Yubikey (FIDO2) | Événementiel (choix user) | Utilisateur | Non (choix personnel) | Blocage après N échecs |
+| Yubikey utilisateur | Événementiel (perte) | Utilisateur | Partiellement | Perte d'accès, secours par 2ᵉ Yubikey ou clé de recouvrement |
+| Clé de recouvrement LUKS | Annuelle ou sur incident | Poste | Oui (regénération + archivage `age`) | Nécessite présence d'une Yubikey |
+| Clé de signature UKI (db) | Annuelle | Flotte | Oui (via service centralisé) | UKI invalide, démarrage impossible |
+| Secure Boot (PK, KEK) | 5 à 10 ans ou sur incident | Flotte entière | Non (double contrôle) | Immobilisation de la flotte |
+| Certificat machine (OpenBao PKI) | Hebdomadaire à mensuelle | Poste | Oui (agent local) | Mise en quarantaine |
+| Jetons et secrets applicatifs | Horaire à hebdomadaire | Agent | Oui (durée courte) | Délai de tolérance dépassé |
 
-**Trois principes transverses** :
+Trois principes transverses :
 
 - **Versionnement via le flake admin** : chaque rotation est un
-  commit traçable et auditable. Retour arrière possible par
-  `nixos-rebuild switch --rollback`.
-- **Déploiement progressif par vagues** : 1 poste pilote → 10 % → 50 %
-  → 100 %. Pause automatique si une anomalie d'attestation est
-  détectée par OpenBao.
+  commit traçable. Retour arrière par `nixos-rebuild switch
+  --rollback`.
+- **Déploiement progressif par vagues** : 1 poste pilote → 10 % →
+  50 % → 100 %. Pause automatique sur anomalie d'attestation.
 - **Période de coexistence** : toute rotation accepte l'ancienne et
-  la nouvelle valeur pendant une fenêtre configurable. Jamais de
-  bascule brutale.
+  la nouvelle valeur pendant une fenêtre configurable.
 
-### 5.3 Mises à jour de la flotte
+### 5.3 Pipeline d'auto-configuration phone-home + git
 
-Chaque mise à jour est un commit dans le flake admin. Le déploiement
-suit le même modèle progressif : pilote, élargissement partiel,
-généralisation. Toute régression détectée par l'attestation (PCR
-quote inattendu, échec de démarrage) déclenche une pause automatique.
+```
+┌─ Poste (phone-home) ──────────────────────────────┐
+│ POST { serial, machine-id, DMI, CPU, RAM, disks,   │
+│        MAC, TPM version, SB status, age_pubkey }   │
+└───────────────────┬───────────────────────────────┘
+                    │ mTLS + signature age
+                    ▼
+┌─ Runner CI du site ───────────────────────────────┐
+│ 1. Authentification (cert + signature)             │
+│ 2. Attribution IP                                  │
+│ 3. API PowerDNS : enregistrements A/PTR/TXT        │
+│ 4. API OpenBao PKI : émission cert machine         │
+│ 5. Commit flake : inventory/<serial>.yaml,         │
+│    machines/<serial>.nix (auto-mergé si liste      │
+│    blanche, sinon revue humaine)                   │
+│ 6. Notification au poste : config prête            │
+└───────────────────────────────────────────────────┘
+```
 
-### 5.4 Attestation continue
+Patterns de sécurité du pipeline :
+
+- mTLS obligatoire pour l'annonce
+- Signature `age` du payload
+- Nonce et timestamp pour anti-rejeu
+- Liste blanche des fichiers modifiables automatiquement
+  (uniquement `machines/<serial>.nix` et `inventory/<serial>.yaml`)
+- Commits signés par clé CI stockée dans OpenBao
+- Protection de la branche `main`, revues N+1 hors liste blanche
+- Journalisation des appels API
+
+Variables remontées utilisables par le pipeline : identité
+(`serial`, `machine-id`, MAC), firmware (vendor, model, BIOS
+version), CPU (famille, flags TPM/SEV/TDX/AVX512), mémoire, stockage
+(nombre et taille des disques), TPM (version, manufacturer), Secure
+Boot (setup/user/disabled), réseau (NICs), sécurité (IOMMU, virt).
+
+### 5.4 Outils de gestion de flotte
+
+Ont été écartés pour ce contexte :
+
+- NixOps, morph : en déclin ou moins maintenus
+- Colmena, deploy-rs : push SSH uniquement, mal adaptés aux postes
+  nomades et aux sites déconnectés
+- KubeNix, KuberNix, Nixlets : Kubernetes, hors scope
+- Nixery : registry de conteneurs, hors scope
+- terraform-nixos, terranix : infra cloud, mauvaise granularité
+- Nixinate, pushnix, krops : minimalistes, sans secrets ni services
+
+Triangle retenu :
+
+| Outil | Sens | Rôle dans l'écosystème |
+|---|---|---|
+| **Clan** | Push SSH (+ vars pull) | Installation initiale et services lourds, catalogue communautaire |
+| **comin** | Pull git côté poste | MCO en régime permanent, adapté postes nomades et air-gap |
+| **phone-home** | Poste → serveur | Inventaire matériel, trigger du pipeline auto-config |
+
+Le choix entre push (Clan) et pull (comin) est structurant. Pour
+des postes admin gov avec nomadisme courant, pull via comin est
+recommandé pour le quotidien. Clan reste pertinent au bootstrap.
+
+Cache binaire : `attic` (fédéré, moderne) est un choix naturel ;
+`harmonia` est une alternative minimaliste. Le doc reste neutre sur
+ce choix, chaque administration peut décider selon ses préférences.
+
+### 5.5 Attestation continue
 
 Chaque poste publie périodiquement à OpenBao :
 
-- Une quote TPM signée (PCR 0/2/4/7/15).
-- Le hash de la closure système active.
-- Le hash de l'UKI en cours.
-- Un compteur anti-rejeu.
+- Une quote TPM signée (PCR 0/2/4/7)
+- Le hash de la closure système active
+- Le hash de l'UKI en cours
+- Un compteur anti-rejeu
 
 OpenBao compare aux valeurs attendues signées pour chaque poste.
-Toute divergence déclenche une alerte opérateur et peut, selon la
-politique de l'administration, révoquer l'accès du poste aux
-secrets applicatifs.
+Toute divergence déclenche une alerte et peut, selon la politique
+de l'administration, révoquer l'accès du poste aux secrets
+applicatifs ou l'enregistrement DNS (mise en quarantaine).
 
-## 6. Gestion des identités sans annuaire LDAP/AD
+## 6. Authentification utilisateur et gestion des identités
 
-### 6.1 Choix architectural
+### 6.1 Politique PAM : FIDO2 principal, mot de passe en secours
 
-L'absence d'annuaire LDAP ou Active Directory par défaut est un
-choix structurant. Il évite :
+La connexion au poste s'effectue **par FIDO2** (Yubikey déjà
+présente pour le déchiffrement LUKS). Le mot de passe local reste
+comme unique méthode de secours, avec des contraintes renforcées :
 
-- un point de défaillance unique (annuaire indisponible =
-  flotte bloquée) ;
-- une surface d'attaque classique (injections LDAP, relais Kerberos) ;
-- une dépendance à une infrastructure Windows incompatible avec un
-  environnement 100 % Linux souverain ;
-- une complexité de maintien en condition opérationnelle
-  disproportionnée au regard du besoin d'un poste admin.
+- Complexité obligatoire (≥16 caractères, diversité)
+- Verrouillage progressif sur échecs (`faillock`, déjà présent dans
+  les PR Sécurix)
+- Alerte OpenBao à chaque usage (événement journalisé à investiguer)
+- Expiration courte pour forcer la reprise du flux FIDO2
 
-Ce choix impose en contrepartie de fournir des alternatives
-industrielles pour la gestion des utilisateurs à l'échelle.
+### 6.2 Absence d'annuaire LDAP/AD : propositions
 
-### 6.2 Propositions
+L'absence d'annuaire LDAP ou Active Directory par défaut évite un
+point de défaillance unique, une surface d'attaque classique, une
+dépendance à une infrastructure Windows et une complexité de MCO
+disproportionnée. En contrepartie, il faut fournir des alternatives
+industrielles.
 
-Trois approches, à discuter selon la taille et la maturité de
-l'administration cible.
+**Proposition 1 — Kanidm (recommandation par défaut)**. Serveur
+d'identité moderne en Rust, WebAuthn/FIDO2 natif, groupes et RBAC,
+PAM via `pam_kanidm`, OIDC pour les services web, LDAP en lecture
+seule si nécessaire. Module NixOS officiel.
 
-**Proposition 1 — Kanidm (recommandation par défaut).** Serveur
-d'identité moderne, écrit en Rust, avec support WebAuthn/FIDO2
-natif. Il offre authentification FIDO2 sans secret partagé,
-groupes et RBAC, délégation, intégration PAM via `pam_kanidm`,
-interface OIDC pour les services web, compatibilité LDAP en
-lecture seule si nécessaire. Module NixOS officiel.
+**Proposition 2 — Authentik ou Keycloak**. Pour les administrations
+déjà outillées. Plus lourd, plus riche (workflows, délégation).
 
-```
-Poste admin ── FIDO2 + pam_kanidm ──▶ Serveur Kanidm (admin)
-                                              │
-                                              ▼
-                                        OpenBao (secrets)
-```
-
-**Proposition 2 — Authentik ou Keycloak (flottes plus grandes).**
-Pour les administrations qui ont déjà investi dans ces outils,
-l'intégration via OIDC reste possible. Plus lourd que Kanidm, mais
-plus riche fonctionnellement (workflows multi-niveaux, délégation
-avancée).
-
-**Proposition 3 — OpenBao et FIDO2 direct (petites flottes).** Pour
-une flotte inférieure à ~50 postes, OpenBao peut servir directement
-de référentiel d'identité : chaque utilisateur est une entrée
-OpenBao avec une clé publique FIDO2. Pas d'annuaire dédié, mais
-mobilisation d'un outil déjà présent.
+**Proposition 3 — OpenBao + FIDO2 direct**. Pour une petite flotte
+(< 50 postes), OpenBao sert directement de référentiel d'identité.
 
 ### 6.3 Cycle de vie utilisateur
 
-- **Arrivée** : création dans Kanidm (ou équivalent), enrôlement
-  de deux Yubikey FIDO2 (principale + sauvegarde), émission d'un
-  certificat utilisateur par OpenBao PKI pour l'accès aux services.
+- **Arrivée** : création dans Kanidm, enrôlement de **deux**
+  Yubikey FIDO2 (principale et sauvegarde), émission d'un
+  certificat utilisateur par OpenBao PKI.
 - **Changement de rôle** : modification des groupes dans Kanidm,
   propagation automatique via `pam_kanidm`.
-- **Perte d'une Yubikey** : révocation de la clé publique dans
-  Kanidm, utilisation de la Yubikey de secours, émission d'une
-  Yubikey de remplacement après vérification d'identité.
-- **Départ** : désactivation du compte (conservation des journaux
-  d'audit pour la durée réglementaire), révocation de tous les
-  certificats OpenBao, retrait des Yubikey, effacement sécurisé du
-  poste si restitution.
+- **Perte d'une Yubikey** : révocation de la clé publique,
+  utilisation de la Yubikey de secours, émission d'une Yubikey de
+  remplacement après vérification d'identité.
+- **Départ** : désactivation du compte (journaux d'audit conservés
+  selon la durée réglementaire), révocation de tous les
+  certificats, retrait des Yubikey, effacement sécurisé du poste si
+  restitution.
 
 ### 6.4 Intégration NixOS
 
-Modules existants mobilisables :
-
-- `services.kanidm` (module NixOS officiel).
-- `security.pam.services.<name>.kanidm` pour l'authentification PAM.
-- `services.kanidm-ssh-authorizer` pour les clés SSH.
+Modules existants mobilisables : `services.kanidm` (officiel),
+`security.pam.services.<name>.kanidm`, `services.kanidm-ssh-authorizer`.
 
 Une option Sécurix pourrait synthétiser ces choix :
 
 ```nix
 services.securix.identity = {
   backend = "kanidm";
-  server = "kanidm.admin.gouv.fr";
+  server = "kanidm.<admin>.gouv.fr";
   enrollment.requireTwoFidoKeys = true;
-  # ...
+  passwordFallback = {
+    enable = true;
+    alertOnUse = true;
+  };
 };
 ```
 
 ## 7. Questions ouvertes
 
-- **Matrice matériel supporté** : la rotation de PK Secure Boot
-  nécessite un firmware UEFI compatible (variable `SetupMode`
-  accessible, ou `db-update.auth` runtime). Tous les constructeurs
-  ne le permettent pas. Une matrice maintenue collectivement
+- **Matrice matériel supporté** : la compatibilité FIDO2 en initrd
+  et l'accès UEFI nécessaire à l'enrôlement Secure Boot varient
+  selon les constructeurs. Une matrice maintenue collectivement
   serait précieuse.
-- **Promotion de modules entre administrations** : comment promouvoir
-  un module L2 développé par une administration vers le noyau L0 s'il
-  est utile à d'autres ? Processus de revue, critères d'acceptation,
-  gouvernance à définir.
-- **Rotation coordonnée Secure Boot** : si deux administrations
-  partagent du matériel (postes recyclés, prêts), la rotation doit
-  être coordonnée. Modalités à discuter.
-- **Attestation et conformité RGPD** : l'attestation continue produit
-  des journaux côté OpenBao. Conformité à examiner (nature des
-  données, durée de conservation, finalité).
+- **Promotion de modules entre administrations** : comment
+  promouvoir un module L2 développé par une administration vers le
+  noyau L0 s'il est utile à d'autres ? Processus de revue, critères
+  d'acceptation à définir.
+- **Rotation coordonnée Secure Boot** : si plusieurs administrations
+  partagent du matériel, la rotation doit être coordonnée.
+- **Attestation et conformité RGPD** : l'attestation continue
+  produit des journaux côté OpenBao. Conformité à examiner.
+- **Air-gap total** : bootstrap sans aucun amont (tout local),
+  procédure d'export physique à documenter.
 
 ## 8. Références
 
@@ -373,11 +609,13 @@ services.securix.identity = {
   GNU/Linux dans un environnement de confiance*.
 - oddlama, « Bypassing Disk Encryption with TPM2 Unlock » (janvier
   2025), <https://oddlama.org/blog/bypassing-disk-encryption-with-tpm2-unlock/>.
-- patrick (lel.lol), module `ensure-pcr.nix`,
-  <https://forge.lel.lol/patrick/nix-config/src/branch/master/modules/ensure-pcr.nix>.
 - nix-community/lanzaboote, <https://github.com/nix-community/lanzaboote>.
 - openbao/openbao, <https://github.com/openbao/openbao>.
 - ryantm/agenix, <https://github.com/ryantm/agenix>.
 - Mic92/sops-nix, <https://github.com/Mic92/sops-nix>.
 - kanidm/kanidm, <https://github.com/kanidm/kanidm>.
+- clan.lol, <https://clan.lol>.
+- nlewo/comin, <https://github.com/nlewo/comin>.
+- zhaofengli/attic, <https://github.com/zhaofengli/attic>.
+- PowerDNS Authoritative, <https://doc.powerdns.com/authoritative/>.
 - Lennart Poettering, « Brave New Trusted Boot World » (octobre 2022).
