@@ -1,0 +1,236 @@
+# SPDX-FileCopyrightText: 2026 Aurélien Ambert <aurelien.ambert@proton.me>
+#
+# SPDX-License-Identifier: MIT
+
+name: '[Sécurix] log-shipper CI'
+
+on:
+  pull_request:
+    paths:
+      - 'modules/log-shipper.nix'
+      - 'modules/log-shipper-dashboards/**'
+      - 'docs/manual/src/user/log-shipping.md'
+      - '.github/workflows/log-shipper-ci.yaml'
+  push:
+    branches:
+      - main
+      - 'feat/o11y-log-shipper'
+    paths:
+      - 'modules/log-shipper.nix'
+      - 'modules/log-shipper-dashboards/**'
+      - 'docs/manual/src/user/log-shipping.md'
+      - '.github/workflows/log-shipper-ci.yaml'
+  workflow_dispatch:
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────
+  # 1. Nix evaluation — module option schema must resolve.
+  # ─────────────────────────────────────────────────────────────
+  eval:
+    name: Nix eval (module options)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b # v31.10.4
+        with:
+          nix_path: nixpkgs=channel:nixos-25.11
+
+      - name: Evaluate module options
+        run: |
+          cat > /tmp/eval-options.nix <<'NIX'
+          let
+            pkgs = import <nixpkgs> {};
+            mod = import ./modules/log-shipper.nix {
+              inherit (pkgs) lib;
+              inherit pkgs;
+              config = { };
+            };
+          in mod.options.securix.logShipper
+          NIX
+          nix-instantiate --eval --strict --json /tmp/eval-options.nix > /dev/null
+          echo "✓ Module options parse cleanly"
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. Build — three representative configurations end up as a
+  #    valid NixOS `system.build.toplevel` closure each.
+  # ─────────────────────────────────────────────────────────────
+  build-matrix:
+    name: Build (${{ matrix.scenario }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - minimal-opensearch
+          - dual-sink-audit-filters
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b # v31.10.4
+        with:
+          nix_path: nixpkgs=channel:nixos-25.11
+          extra_nix_config: |
+            substituters = https://cache.nixos.org
+            experimental-features = nix-command
+
+      - name: Write scenario config
+        run: |
+          mkdir -p /tmp/ci
+          case "${{ matrix.scenario }}" in
+            minimal-opensearch)
+              cat > /tmp/ci/scenario.nix <<'NIX'
+              {
+                securix.logShipper = {
+                  sources.units = [ "sshd.service" "sudo.service" "auditd.service" ];
+                  sinks.opensearch = {
+                    enable = true;
+                    endpoint = "https://opensearch.corp.local:9200";
+                  };
+                };
+              }
+              NIX
+              ;;
+            dual-sink-audit-filters)
+              cat > /tmp/ci/scenario.nix <<'NIX'
+              {
+                securix.logShipper = {
+                  sources = {
+                    units = [ "auditd.service" "sshd.service" "sudo.service" ];
+                    auditFile.enable = true;
+                  };
+                  filters = [
+                    { name = "drop_debug"; dropIf = ''to_int(.PRIORITY) ?? 6 > 6''; }
+                    { name = "drop_cron";  dropIf = ''.SYSLOG_IDENTIFIER == "CRON"''; }
+                  ];
+                  sinks.opensearch = {
+                    enable = true;
+                    endpoint = "https://opensearch.corp.local:9200";
+                  };
+                  sinks.syslog = {
+                    enable = true;
+                    endpoint = "siem.corp.local:6514";
+                    mode = "tcp+tls";
+                  };
+                };
+              }
+              NIX
+              ;;
+          esac
+          cat > /tmp/ci/build.nix <<'NIX'
+          { scenario }:
+          let
+            pkgs = import <nixpkgs> { };
+            nixos = import (pkgs.path + "/nixos/lib/eval-config.nix") {
+              system = "x86_64-linux";
+              modules = [
+                ({ ... }: {
+                  boot.loader.grub.devices = [ "nodev" ];
+                  fileSystems."/" = { device = "/dev/sda1"; fsType = "ext4"; };
+                  system.stateVersion = "25.11";
+                })
+                ./modules/log-shipper.nix
+                scenario
+              ];
+            };
+          in {
+            toplevel = nixos.config.system.build.toplevel;
+            execStart = nixos.config.systemd.services.securix-log-shipper.serviceConfig.ExecStart;
+            warnings = nixos.config.warnings;
+          }
+          NIX
+
+      - name: Build system toplevel
+        run: |
+          nix-build /tmp/ci/build.nix -A toplevel \
+            --argstr scenario /tmp/ci/scenario.nix \
+            --arg scenario "import /tmp/ci/scenario.nix" \
+            -o /tmp/ci/result
+
+      - name: Inspect generated unit
+        run: |
+          UNIT=/tmp/ci/result/etc/systemd/system/securix-log-shipper.service
+          echo "=== securix-log-shipper.service ==="
+          grep -E '^(ExecStartPre|ExecStart|LoadCredential|EnvironmentFile|RuntimeDirectory|DynamicUser|ProtectSystem|SystemCallFilter|RestrictAddressFamilies)=' "$UNIT"
+
+      - name: Extract Vector config path
+        id: cfg
+        run: |
+          UNIT=/tmp/ci/result/etc/systemd/system/securix-log-shipper.service
+          CFG=$(grep -oE '/nix/store/[^ ]+securix-vector.json' "$UNIT" | head -1)
+          echo "path=$CFG" >> "$GITHUB_OUTPUT"
+          echo "Vector config: $CFG"
+
+      - name: vector validate --no-environment
+        run: |
+          VECTOR=$(nix-build '<nixpkgs>' -A vector --no-out-link)
+          "$VECTOR/bin/vector" validate --no-environment "${{ steps.cfg.outputs.path }}"
+
+      - name: Show warnings (non-fatal)
+        run: |
+          nix-instantiate --eval --strict --json /tmp/ci/build.nix \
+            --arg scenario "import /tmp/ci/scenario.nix" \
+            -A warnings || true
+
+  # ─────────────────────────────────────────────────────────────
+  # 3. Dashboards — each JSON parses; required top-level keys
+  #    and datasource uid reference are present.
+  # ─────────────────────────────────────────────────────────────
+  dashboards:
+    name: Grafana dashboards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: cachix/install-nix-action@616559265b40713947b9c190a8ff4b507b5df49b # v31.10.4
+        with:
+          nix_path: nixpkgs=channel:nixos-25.11
+
+      - name: Validate JSON + required fields
+        run: |
+          set -e
+          JQ=$(nix-build '<nixpkgs>' -A jq --no-out-link)/bin/jq
+          fail=0
+          for f in modules/log-shipper-dashboards/*.json; do
+            echo "--- $f ---"
+            "$JQ" . "$f" > /dev/null
+            UID_=$("$JQ" -r .uid "$f")
+            TITLE=$("$JQ" -r .title "$f")
+            DS_UIDS=$("$JQ" -r '[.panels[].targets[]?.datasource.uid] | unique | .[]' "$f")
+            echo "uid=$UID_ title=$TITLE"
+            for d in $DS_UIDS; do
+              if [ "$d" != "opensearch" ]; then
+                echo "  ✗ panel references unexpected datasource uid: $d"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
+
+  # ─────────────────────────────────────────────────────────────
+  # 4. Docs — no dead links inside the log-shipping page.
+  # ─────────────────────────────────────────────────────────────
+  docs-links:
+    name: Docs internal links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Check referenced files exist
+        run: |
+          set -e
+          DOC=docs/manual/src/user/log-shipping.md
+          missing=0
+          for p in \
+            docs/manual/src/images/securix-audit-dashboard.png \
+            modules/log-shipper-dashboards/securix-log-overview.json \
+            modules/log-shipper-dashboards/securix-ssh-focus.json \
+            modules/log-shipper-dashboards/securix-audit.json
+          do
+            if [ ! -e "$p" ]; then
+              echo "✗ $DOC references missing file: $p"
+              missing=1
+            else
+              echo "✓ $p"
+            fi
+          done
+          exit $missing

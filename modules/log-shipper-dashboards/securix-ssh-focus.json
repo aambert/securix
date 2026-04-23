@@ -1,0 +1,132 @@
+{
+  "uid": "securix-ssh",
+  "title": "Sécurix — SSH Activity",
+  "tags": ["securix", "ssh", "auth"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "annotations": { "list": [] },
+  "templating": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "SSH events (range)",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "SYSLOG_IDENTIFIER:sshd OR _SYSTEMD_UNIT:sshd.service",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "date_histogram", "field": "timestamp", "settings": { "interval": "1h", "min_doc_count": "0" } }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["sum"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Accepted logins",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "message:Accepted",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "date_histogram", "field": "timestamp", "settings": { "interval": "1h", "min_doc_count": "0" } }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["sum"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "fixed", "fixedColor": "green" } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Failed / Invalid logins",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "message:Failed OR message:Invalid OR message:\"authentication failure\"",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "date_histogram", "field": "timestamp", "settings": { "interval": "1h", "min_doc_count": "0" } }
+          ]
+        }
+      ],
+      "options": {
+        "reduceOptions": { "values": false, "calcs": ["sum"] },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "SSH events / minute",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "SYSLOG_IDENTIFIER:sshd OR _SYSTEMD_UNIT:sshd.service",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "date_histogram", "field": "timestamp", "settings": { "interval": "auto" } }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "SSH events (latest 200)",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 16 },
+      "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-opensearch-datasource", "uid": "opensearch" },
+          "query": "SYSLOG_IDENTIFIER:sshd OR _SYSTEMD_UNIT:sshd.service",
+          "queryType": "lucene",
+          "metrics": [{ "id": "1", "type": "raw_data", "settings": { "size": "200" } }],
+          "bucketAggs": []
+        }
+      ]
+    }
+  ]
+}
